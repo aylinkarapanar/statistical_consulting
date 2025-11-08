@@ -1,0 +1,424 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+set.seed(42)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(furrr)
+library(purrr)
+library(future)
+
+
+#Start by downloading the data for Nijmegen from Copernicus 
+gpkg_path <- "./NL013L3_NIJMEGEN_UA2018_v013/Data/NL013L3_NIJMEGEN_UA2018_v013.gpkg"
+buffer_radius <- 100    # meters
+min_distance <- 200     # meters between sites
+samples_per_stratum <- 2
+grid_spacing <- 200     # meters between grid points 
+
+# Define green and blue zone codes
+green_codes <- c("14100","31000","32000","21000","22000","23000","24000")
+blue_codes  <- c("50000","40000")
+
+
+```
+
+```{r}
+urban_atlas <- st_read(gpkg_path, quiet = TRUE)
+urban_atlas <- st_make_valid(urban_atlas)
+
+green_zones <- urban_atlas %>% filter(code_2018 %in% green_codes)
+blue_zones  <- urban_atlas %>% filter(code_2018 %in% blue_codes)
+```
+```{r}
+# Generate candidate points per grid
+
+bbox <- st_bbox(urban_atlas)
+grid_points <- st_make_grid(urban_atlas, cellsize = grid_spacing, what = "centers") %>%
+st_as_sf() %>%
+st_intersection(st_union(urban_atlas)) %>%
+mutate(site_id = row_number())
+
+cat(sprintf("%d candidate points\n", nrow(grid_points)))
+
+```
+
+
+```{r, warning = FALSE}
+# Divide the candidate points to strata
+
+quick_classify <- function(point_geom, green_zones, radius) {
+  buffer <- st_buffer(point_geom, dist = radius)
+  buffer_area <- st_area(buffer)
+  
+  green_nearby <- green_zones %>% 
+    select(code_2018) %>%
+    st_filter(buffer, .predicate = st_intersects)
+  
+  if (nrow(green_nearby) > 0) {
+    green_intersect <- st_intersection(green_nearby, buffer)
+    green_area <- sum(st_area(green_intersect))
+    green_pct <- as.numeric(green_area / buffer_area * 100)
+  } else {
+    green_pct <- 0
+  }
+  
+  stratum <- case_when(
+    green_pct < 25 ~ 1,
+    green_pct < 50 ~ 2,
+    green_pct < 75 ~ 3,
+    TRUE ~ 4
+  )
+  
+  return(data.frame(green_pct = green_pct, stratum = stratum))
+}
+
+# Parallize the computation
+plan(multisession, workers = parallel::detectCores() - 1)
+
+quick_metrics <- future_map_dfr(
+  seq_len(nrow(grid_points)), 
+  function(i) quick_classify(grid_points[i, ], green_zones, buffer_radius),
+  .progress = TRUE
+)
+
+candidate_sites <- grid_points %>%
+  mutate(site_id = row_number()) %>%
+  bind_cols(quick_metrics)
+
+print(table(candidate_sites$stratum))
+```
+
+```{r, warning = FALSE}
+# Perform stratified sampling
+
+sample_stratum <- function(candidates, n_samples, min_dist, max_attempts = 1000) {
+  if (nrow(candidates) == 0) return(NULL)
+  
+  selected <- candidates[0, ]
+  remaining <- candidates
+  attempts <- 0
+  failed_attempts <- 0
+  
+  while (nrow(selected) < n_samples && nrow(remaining) > 0 && attempts < max_attempts) {
+    attempts <- attempts + 1
+    
+    # Random selection from remaining
+    idx <- sample(nrow(remaining), 1)
+    new_site <- remaining[idx, ]
+    
+    # Check distance constraint
+    if (nrow(selected) > 0) {
+      distances <- as.numeric(st_distance(new_site, selected))
+      if (any(distances < min_dist)) {
+        # If too close, remove and try another point
+        remaining <- remaining[-idx, ]
+        failed_attempts <- failed_attempts + 1
+        next
+      }
+    }
+    
+    # Site is valid
+    selected <- rbind(selected, new_site)
+    failed_attempts <- 0  # Reset counter on success
+  }
+  
+  if (nrow(selected) < n_samples) {
+    cat(sprintf(" Warning: Found %d of %d requested sites after %d attempts\n",
+                nrow(selected), n_samples, attempts))
+  }
+  
+  return(selected)
+}
+
+# Sample from each stratum
+selected_sites <- list()
+
+for (s in 1:4) {
+  # Get the candidate points for the stratum s
+  stratum_candidates <- candidate_sites %>% filter(stratum == s)
+  
+  selected <- sample_stratum(
+    stratum_candidates,
+    n_samples = samples_per_stratum,
+    min_dist = min_distance,
+    max_attempts = 5000
+  )
+  
+  if (!is.null(selected) && nrow(selected) > 0) {
+    selected_sites[[s]] <- selected
+    cat(sprintf("  Selected %d sites\n", nrow(selected)))
+  } else {
+    cat(sprintf("Could not find any sites meeting distance constraint\n"))
+  }
+}
+
+final_sites <- bind_rows(selected_sites)
+
+cat(sprintf("\nTotal selected sites: %d\n", nrow(final_sites)))
+
+```
+```{r}
+
+final_sites_summary <- final_sites %>%
+  st_drop_geometry() %>%
+  mutate(
+    coords = st_coordinates(final_sites),
+    x = coords[, 1],
+    y = coords[, 2]
+  ) %>%
+  select(site_id, stratum, green_pct,
+         x, y) %>%
+  arrange(stratum, site_id)
+
+print(final_sites_summary)
+
+```
+
+```{r, warning=FALSE}
+# Calculate the metrics for the selected sites
+
+calculate_detailed <- function(point_geom, green_zones, blue_zones, radius) {
+  buffer <- st_buffer(point_geom, dist = radius)
+  buffer_area <- st_area(buffer)
+  
+  # Dominant green zone
+  green_nearby <- green_zones %>% 
+    select(code_2018, class_2018) %>%
+    st_filter(buffer, .predicate = st_intersects)
+  
+  if (nrow(green_nearby) > 0) {
+    green_intersect <- st_intersection(green_nearby, buffer) %>%
+      mutate(area = st_area(st_geometry(.)))
+    
+    green_by_code <- green_intersect %>%
+      st_drop_geometry() %>%
+      group_by(code_2018, class_2018) %>%
+      summarise(total = sum(area), .groups = "drop") %>%
+      arrange(desc(total))
+    
+    dom_code <- green_by_code$code_2018[1]
+    dom_class <- green_by_code$class_2018[1]
+  } else {
+    dom_code <- NA
+    dom_class <- NA
+  }
+  
+  # Blue zones
+  blue_nearby <- blue_zones %>% st_filter(buffer, .predicate = st_intersects)
+  
+  if (nrow(blue_nearby) > 0) {
+    blue_intersect <- st_intersection(blue_nearby, buffer)
+    blue_pct <- as.numeric(sum(st_area(blue_intersect)) / buffer_area * 100)
+  } else {
+    blue_pct <- 0
+  }
+  
+  # Distance to closest blue zone
+  dist_blue <- if(nrow(blue_zones) > 0) {
+    as.numeric(min(st_distance(point_geom, blue_zones)))
+  } else NA
+  
+  return(data.frame(
+    blue_pct = blue_pct,
+    dist_to_blue = dist_blue,
+    dominant_green_code = dom_code,
+    dominant_green_class = dom_class
+  ))
+}
+
+detailed <- future_map_dfr(
+  seq_len(nrow(final_sites)),
+  function(i) calculate_detailed(final_sites[i, ], green_zones, blue_zones, buffer_radius),
+  .progress = TRUE
+)
+
+final_sites <- final_sites %>% bind_cols(detailed)
+```
+
+```{r}
+
+# Extract coordinates in original CRS
+coords_3035 <- st_coordinates(final_sites)
+
+# Transform to WGS84 for GPS coordinates
+final_sites_wgs84 <- st_transform(final_sites, 4326)
+coords_wgs84 <- st_coordinates(final_sites_wgs84)
+
+final_sites_summary <- final_sites %>%
+  st_drop_geometry() %>%
+  mutate(
+    x_epsg3035 = coords_3035[, 1],
+    y_epsg3035 = coords_3035[, 2],
+    longitude = coords_wgs84[, 1],
+    latitude = coords_wgs84[, 2]
+  ) %>%
+  select(site_id, stratum, 
+         longitude, latitude,
+         x_epsg3035, y_epsg3035,
+         green_pct, blue_pct, dist_to_blue,
+         dominant_green_code, dominant_green_class) %>%
+  arrange(stratum, site_id)
+
+print(final_sites_summary, n = Inf)
+
+
+output_dir <- "sampling_results"
+dir.create(output_dir, showWarnings = FALSE)
+
+# Save as CSV 
+write.csv(final_sites_summary, 
+          file.path(output_dir, "nijmegen_sites_coordinates.csv"),
+          row.names = FALSE)
+
+```
+
+```{r}
+other_zones <- urban_atlas %>%
+  filter(!code_2018 %in% c(green_codes, blue_codes))
+
+site_buffers <- final_sites %>%
+  st_buffer(dist = buffer_radius)
+
+land_use_labels <- c(
+  "14100" = "Green urban areas",
+  "31000" = "Forests",
+  "32000" = "Herbaceous vegetation",
+  "21000" = "Arable land",
+  "22000" = "Permanent crops",
+  "23000" = "Pastures",
+  "24000" = "Complex cultivation"
+)
+
+
+p <- ggplot() +
+  # Base map
+  geom_sf(data = other_zones, fill = "grey85", 
+          color = "grey70", linewidth = 0.1, alpha = 0.8) +
+  # Green zones
+  geom_sf(data = green_zones, aes(fill = code_2018), 
+          color = "darkgreen", linewidth = 0.2, alpha = 0.7) +
+  # Blue zones
+  geom_sf(data = blue_zones, fill = "lightblue", 
+          color = "blue", linewidth = 0.2, alpha = 0.7) +
+
+  geom_sf(data = site_buffers, aes(color = as.factor(stratum)), 
+          fill = NA, linewidth = 1) + 
+
+  geom_sf(data = final_sites, aes(fill = as.factor(stratum)), 
+          color = 'white', size = 4, shape = 21, stroke = 0.5) +  
+  
+
+  scale_fill_manual(
+    name = "Land Use Types",
+    values = c(
+      "14100" = "#9FDF9F", 
+      "31000" = "#1A6B00",  
+      "32000" = "#C3E68C",  
+      "21000" = "#FFFFCC", 
+      "22000" = "#F5B77B", 
+      "23000" = "#FFFF00",  
+      "24000" = "#FFFFB2",
+      
+      "1" = "#d7191c",
+      "2" = "#fdae61",
+      "3" = "#b2abd2",
+      "4" = "#5e3c99"
+    ),
+    breaks = green_codes,
+    labels = land_use_labels[green_codes],
+    na.translate = FALSE,
+    guide = guide_legend(order = 1, override.aes = list(shape = NA))
+  ) +
+  
+  # Color scale for buffer outlines
+  scale_color_manual(
+    name = "Green Coverage",
+    values = c(
+      "1" = "#d7191c",
+      "2" = "#fdae61",
+      "3" = "#b2abd2",
+      "4" = "#5e3c99"
+    ),
+    labels = c(
+      "1" = "0-25%",
+      "2" = "25-50%", 
+      "3" = "50-75%",
+      "4" = "75-100%"
+    ),
+    guide = guide_legend(
+      order = 2,
+     override.aes = list(
+        fill = c("#d7191c", "#fdae61","#b2abd2","#5e3c99"),
+        color = "white",
+        shape = 21,     
+        size = 4,       
+        stroke = 0.5    
+      )
+    )
+  ) +
+  
+  labs(
+    title = "Stratified Sampling Sites - Nijmegen Urban Atlas 2018",
+    x = NULL, 
+    y = NULL
+  ) +
+  
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", size = 14, margin = margin(b = 5)),
+    plot.subtitle = element_text(size = 9, color = "grey30", margin = margin(b = 10)),
+    plot.caption = element_text(size = 8, color = "grey50", hjust = 1),
+    axis.text = element_text(size = 8, color = "grey40"),
+    legend.text = element_text(size = 9),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.key.height = unit(0.8, "cm"),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  )
+
+p
+```
+```{r}
+# Save plot
+ggsave(file.path(output_dir, "nijmegen_sampling_map.png"),
+       plot = p, width = 14, height = 10, dpi = 300)
+```
+
+```{r}
+
+summary_stats <- final_sites %>%
+  st_drop_geometry() %>%
+  group_by(stratum) %>%
+  summarise(
+    n = n(),
+    mean_green = mean(green_pct, na.rm = TRUE),
+    mean_blue = mean(blue_pct, na.rm = TRUE),
+    mean_dist_blue = mean(dist_to_blue, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(summary_stats)
+
+final_sites %>%
+  st_drop_geometry() %>%
+  filter(!is.na(dominant_green_class)) %>%
+  group_by(stratum, dominant_green_class) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(stratum, desc(count)) %>%
+  print(n = Inf)
+
+
+```
+
+
+
+
