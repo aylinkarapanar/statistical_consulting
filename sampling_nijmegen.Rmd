@@ -3,6 +3,10 @@ title: "R Notebook"
 output: html_notebook
 ---
 
+```{r}
+# Create three stratums
+```
+
 
 ```{r}
 set.seed(42)
@@ -14,12 +18,11 @@ library(furrr)
 library(purrr)
 library(future)
 
-
 #Start by downloading the data for Nijmegen from Copernicus 
 gpkg_path <- "./NL013L3_NIJMEGEN_UA2018_v013/Data/NL013L3_NIJMEGEN_UA2018_v013.gpkg"
 buffer_radius <- 100    # meters
 min_distance <- 200     # meters between sites
-samples_per_stratum <- 2
+samples_per_stratum <- 3
 grid_spacing <- 200     # meters between grid points 
 
 # Define green and blue zone codes

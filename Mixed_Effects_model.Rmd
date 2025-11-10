@@ -9,6 +9,25 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r}
+# TO DO list:
+# add predator abundance and prey abundance
+# consider non-linearity (sigmoid for temperature and/or humidity?, check the literature if there is time)
+# Potential transformation for abundance/count (link function: log)
+# Poisson or.normal distribution for abundance
+# Normal for biodiversity?
+# should we add time?
+# should we add country to account for spatial autocorrelation?
+# model comparisons
+# 
+# how to handle the missingness by scenario
+    # consider multiple imputation -> which variables should be considered?
+# how to handle relocation of sampling sites?
+    # if within 100m buffers -> keep as it is 
+    # more than 100m -> try to relocate to same urban greening percentage
+                    # -> if not same strata
+
+```
 
 
 ```{r}
