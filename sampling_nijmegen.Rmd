@@ -73,10 +73,9 @@ quick_classify <- function(point_geom, green_zones, radius) {
   }
   
   stratum <- case_when(
-    green_pct < 25 ~ 1,
-    green_pct < 50 ~ 2,
-    green_pct < 75 ~ 3,
-    TRUE ~ 4
+    green_pct < 33 ~ 1,
+    green_pct < 66 ~ 2,
+    TRUE ~ 3
   )
   
   return(data.frame(green_pct = green_pct, stratum = stratum))
@@ -143,7 +142,7 @@ sample_stratum <- function(candidates, n_samples, min_dist, max_attempts = 1000)
 # Sample from each stratum
 selected_sites <- list()
 
-for (s in 1:4) {
+for (s in 1:3) {
   # Get the candidate points for the stratum s
   stratum_candidates <- candidate_sites %>% filter(stratum == s)
   
@@ -331,8 +330,7 @@ p <- ggplot() +
       
       "1" = "#d7191c",
       "2" = "#fdae61",
-      "3" = "#b2abd2",
-      "4" = "#5e3c99"
+      "3" = "#5e3c99"
     ),
     breaks = green_codes,
     labels = land_use_labels[green_codes],
@@ -346,19 +344,17 @@ p <- ggplot() +
     values = c(
       "1" = "#d7191c",
       "2" = "#fdae61",
-      "3" = "#b2abd2",
-      "4" = "#5e3c99"
+      "3" = "#5e3c99"
     ),
     labels = c(
-      "1" = "0-25%",
-      "2" = "25-50%", 
-      "3" = "50-75%",
-      "4" = "75-100%"
+      "1" = "0-33%",
+      "2" = "33-66%", 
+      "3" = "66-100%",
     ),
     guide = guide_legend(
       order = 2,
      override.aes = list(
-        fill = c("#d7191c", "#fdae61","#b2abd2","#5e3c99"),
+        fill = c("#d7191c", "#fdae61","#5e3c99"),
         color = "white",
         shape = 21,     
         size = 4,       
