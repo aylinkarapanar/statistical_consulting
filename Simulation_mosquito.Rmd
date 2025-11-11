@@ -42,7 +42,7 @@ design$Country <- ifelse(design$City %in% c("Utrecht", "Nijmegen"), "Netherlands
 
 ```{r}
 #environmental variables
-design$Green_level <- sample(1:4, nrow(design), replace = TRUE)
+design$Green_level <- sample(1:3, nrow(design), replace = TRUE)
 design$Green_area_coverage <- round(runif(nrow(design), 5, 80), 2)
 design$Blue_area_coverage <- round(runif(nrow(design), 2, 50), 2)
 design$Temperature <- round(rnorm(nrow(design), mean = 22, sd = 5), 2)
