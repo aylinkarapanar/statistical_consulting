@@ -1,10 +1,12 @@
 ---
-title: "R Notebook"
+title: "Example Sampling Procedure"
 output: html_notebook
 ---
 
 ```{r}
 # Create three stratums
+# Use city borders layer
+# Put restriction so that the samples are not close to the borders
 ```
 
 
