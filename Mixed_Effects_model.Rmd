@@ -286,6 +286,8 @@ m_final <- glmmTMB(
   REML = TRUE
 )
 
+summary(m_final)
+
 ```
 
 
