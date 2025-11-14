@@ -34,16 +34,6 @@ df <- read.csv("./data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv")
 ```{r}
 head(df)
 ```
-```{r}
-df <- df %>%
-  mutate(
-    Green_level = as.numeric(scale(Green_level)),
-    Temperature = as.numeric(scale(Temperature)),
-    Relative_humidity = as.numeric(scale(Relative_humidity)),
-    Blue_area_coverage = as.numeric(scale(Blue_area_coverage))
-  )
-
-```
 
 ## 2. Model Specification
 
@@ -54,7 +44,7 @@ We start by first defining the random effects part. There are two random effects
 
 ```{r}
 m1_baseline <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature * Relative_humidity +
                        Host_abundance * Prey_abundance +
                        Blue_area_coverage +
@@ -76,12 +66,12 @@ In the second model, we consider random slopes for green levels in the cities, m
 
 ```{r}
 m2_city_green <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature * Relative_humidity +
                        Host_abundance * Prey_abundance +
                        Blue_area_coverage +
                        factor(Month) +
-                      (1 + Green_level | City) +          # City random intercept + slope
+                      (1 + Green_area_coverage | City) +          # City random intercept + slope
                       (1 | Location.Site:City) +        
                       (1 | Mosquito_species),
   family = nbinom2(),
@@ -101,6 +91,7 @@ lrt_m2 <- anova(m1_baseline, m2_city_green)$Chisq[2]
 p_m2 <- 0.5 * pchisq(lrt_m2, df = 2, lower.tail = FALSE) + 
            0.5 * pchisq(lrt_m2, df = 1, lower.tail = FALSE)
 cat("p-value:", p_m2, "\n")
+
 ```
 
 AIC difference is positive and the $H_0: \text{Cities do not differ in how urban green level affects mosquito abundance}$ is not rejected (p>0.05), the random slope of urban green level is not significant.
@@ -108,7 +99,7 @@ AIC difference is positive and the $H_0: \text{Cities do not differ in how urban
 
 ```{r}
 m3_city_temp <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature * Relative_humidity +
                        Host_abundance * Prey_abundance +
                        Blue_area_coverage +
@@ -137,12 +128,12 @@ AIC difference is positive and the $H_0: \text{Cities do not differ in how tempe
 
 ```{r}
 m4_both_slopes <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature * Relative_humidity +
                        Host_abundance * Prey_abundance +
                        Blue_area_coverage +
                        factor(Month) +
-                       (1 + Green_level + Temperature | City) +
+                       (1 + Green_area_coverage + Temperature | City) +
                        (1 | Location.Site:City) +
                        (1 | Mosquito_species),
   family = nbinom2(),
@@ -179,12 +170,12 @@ aic_tab <- aic_tab %>% arrange(AIC)
 print(aic_tab)
 ```
 
-Across the models tested, the lowest AIC value was tested was achieved by model 2, for the remainder of the model selection procedure we will use the random effects defined in model 2. Now, we will focus on getting a more parsimonious fixed effects part by removing interaction terms in a step wise manner.
+Across the models tested, the lowest AIC value was tested was achieved by model 2, for the remainder of the model selection procedure we will use the random effects defined in model 1. Now, we will focus on getting a more parsimonious fixed effects part by removing interaction terms in a step wise manner.
 
 
 ```{r}
 m_full <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature * Relative_humidity +
                        Host_abundance * Prey_abundance +
                        Blue_area_coverage +
@@ -202,7 +193,7 @@ summary(m_full)
 We start by removing the least significant interaction term which is Temperature:Relative_humidity . 
 ```{r}
 m_wo_temp_hum <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature + Relative_humidity +
                        Host_abundance * Prey_abundance +
                        Blue_area_coverage +
@@ -221,7 +212,7 @@ Removing the Temp x Humidity interaction does not significantly worsen model fit
 
 ```{r}
 m_wo_host_prey <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature + Relative_humidity +
                        Host_abundance + Prey_abundance +
                        Blue_area_coverage +
@@ -240,7 +231,7 @@ Removing the Host × Prey interaction does not significantly worsen model fit, t
 
 ```{r}
 m_wo_blue <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature + Relative_humidity +
                        Host_abundance + Prey_abundance +
                        factor(Month) +  # Remove Blue
@@ -258,7 +249,7 @@ Month showes mixed significance, so we will try removing it and compare the mode
 
 ```{r}
 m_wo_month <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature + Relative_humidity +
                        Host_abundance + Prey_abundance +
                        # Remove Month entirely
@@ -275,10 +266,10 @@ Removing the month worsens the fit, so our final model is:
 
 ```{r}
 m_final <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type +
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature + Relative_humidity +
                        Host_abundance + Prey_abundance +
-                       factor(Month) +  # Remove Blue
+                       factor(Month) +  
                        (1 | City / Location.Site) +
                        (1 | Mosquito_species), 
   family = nbinom2(),
@@ -291,45 +282,50 @@ summary(m_final)
 ```
 
 
-## 3. Model Results
-
+## 4. Model Diagnostics
 
 ```{r}
-summary(m1)
+library(DHARMa)
+
+# Simulate residuals
+sim_res <- simulateResiduals(m_final)
+
+# Plot residual diagnostics
+plot(sim_res)
 
 ```
+```{r}
+testDispersion(sim_res)
+```
+```{r}
+testZeroInflation(sim_res)
+```
+```{r}
+ranef(m_final)
+```
+```{r}
+library(ggeffects)
+preds <- ggpredict(m_final, terms = c("Green_area_coverage", "Trap_type"))
+plot(preds) + labs(y="Predicted Mosquito Abundance")
 
-## 4. Model Interpretation
+```
+```{r}
+pred_temp <- ggpredict(m_final, terms = "Temperature [all]")
+plot(pred_temp) + 
+  labs(title = "Predicted Mosquito Abundance", 
+       y="Predicted Mosquito Abundance")
+
+plot(pred_month) +
+  labs(title = "Predicted Mosquito Abundance", 
+       y = "Predicted Mosquito Abundance", 
+       x = "Month") +
+  scale_x_discrete(drop = FALSE) +   
+  theme_minimal()
+```
 
 
 
-This model accounts for:
-Fixed effects: environmental and trap-related predictors,
-Random effects: site nested in city, and species-level variation,
-Count data (abundance) with overdispersion → handled by the Negative Binomial distribution.
-
-
-
-| Predictor                   | Estimate    | p-value                                                                                | Interpretation                                           |
-| --------------------------- | ----------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| **Intercept = 0.594**       | —           | Baseline abundance at average conditions is moderate.                                   |                                                          |
-| **Green_level = 0.784**                   |< 2e-16 *** | ✅ Strong, highly significant — higher greenness strongly increases mosquito abundance. |                                              
-| **Trap_type (Light_CO2)**   | 0.009       | 0.836                                                                                  | ❌ No significant difference between trap types.          |
-| **Temperature_2m**          | 0.0009      | 0.740                                                                                  | ❌ No effect of temperature (mock data generated weakly). |
-| **Relative_humidity**       | -0.0006     | 0.506                                                                                  | ❌ No significant effect (mock data).                     |
-| **Blue_area_coverage**      | 0.001       | 0.616                                                                                  | ❌ No significant effect (mock data).                     |
-| **Green_level × Trap_type** | -0.002      | 0.861                                                                                  | ❌ No interaction between greenness and trap type.        |
-
-
-Mosquito abundance increases significantly with urban greenness level — suggesting that greener areas support more mosquitoes.
-
-
-### Key Model Findings
-*Green Level** — Highly significant (*p < 0.001*): Mosquito abundance increases with greener environments.  
-*Trap Type** — Not significant: Trap efficiency is comparable.  
-*Temperature, Humidity, Blue Coverage** — Not significant in this model, but may interact with greenness in future models.  
-**Random Effects** — Species and site-level variance are small but nonzero, supporting inclusion of these random intercepts.
-
+## 5. Model Interpretation
 
 
 ### Interpretation Summary
@@ -344,6 +340,24 @@ Mosquito abundance rises significantly with increasing urban green level, while 
 Random effects indicate modest variability among mosquito species and sampling sites, supporting the inclusion of these random terms.
 
 
+```{r}
+library(sjPlot)
+
+plot_model(m_final, type = "est", 
+           axis.lim = c(0.8, 1.4),        
+           show.values = TRUE,             
+           value.offset = 0.3,            
+           value.size = 2.5,               
+           dot.size = 2,                
+           line.size = 0.7,
+           vline.color = 'black') +              
+  labs(title = "Incidence Rate Ratios (IRR)",
+       x = "Incidence Rate Ratio") +
+  theme_minimal()     
+
+
+
+```
 
 
 ## 5. Visualizations
@@ -448,7 +462,7 @@ ggplot(ran_df, aes(x = reorder(Level, Estimate), y = Estimate, color = Group)) +
 
 
 
-### weather data visualitaon 
+### Weather data visualitaon 
 
 ```{r}
 ggplot(df, aes(x = Temperature_2m)) +
