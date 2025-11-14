@@ -1,32 +1,12 @@
 ---
-title: "Mixed_Effects"
-author: "Atakan_Akgun"
+title: "Model Spesifications"
+author: "Atakan_Akgun, Aylin Karapanar"
 date: "`r Sys.Date()`"
-output: pdf_document
+output: html_notebook
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-```
-
-```{r}
-# TO DO list:
-# add predator abundance and prey abundance
-# consider non-linearity (sigmoid for temperature and/or humidity?, check the literature if there is time)
-# Potential transformation for abundance/count (link function: log)
-# Poisson or.normal distribution for abundance
-# Normal for biodiversity?
-# should we add time?
-# should we add country to account for spatial autocorrelation?
-# model comparisons
-# 
-# how to handle the missingness by scenario
-    # consider multiple imputation -> which variables should be considered?
-# how to handle relocation of sampling sites?
-    # if within 100m buffers -> keep as it is 
-    # more than 100m -> try to relocate to same urban greening percentage
-                    # -> if not same strata
-
 ```
 
 
@@ -41,31 +21,270 @@ library(dplyr)
 library(lubridate)
 library(emmeans)
 library(tidyverse)
-
+library(performance)
 ```
 
 ## 1. Data Import and Preparation
 
 ```{r}
-df <- read.csv("data/Mock_Mosquito_MixedEffects_Dataset_v2.csv")
+df <- read.csv("./data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv")
 
 ```
 
+```{r}
+head(df)
+```
+```{r}
+df <- df %>%
+  mutate(
+    Green_level = as.numeric(scale(Green_level)),
+    Temperature = as.numeric(scale(Temperature)),
+    Relative_humidity = as.numeric(scale(Relative_humidity)),
+    Blue_area_coverage = as.numeric(scale(Blue_area_coverage))
+  )
+
+```
 
 ## 2. Model Specification
 
-```{r}
+### Defining Random Effects
 
-model_abundance <- glmmTMB(
+We start by first defining the random effects part. There are two random effects defined in our model, one for the nested structure in our data and the other for the mosquito species. By defining random intercepts in m1 model, we assume that different cities have different baseline abundance levels, different sites within the same city have different baseline abundance, and different mosquito species have different baseline abundance levels. However, the slopes remain consistent meaning all cities and species respond to green coverage the same way.
+
+
+```{r}
+m1_baseline <- glmmTMB(
   Mosquito_abundance ~ Green_level * Trap_type +
-                       Temperature_2m + Relative_humidity +
+                       Temperature * Relative_humidity +
+                       Host_abundance * Prey_abundance +
                        Blue_area_coverage +
+                       factor(Month) +
                        (1 | City / Location.Site) +      # nested random effects
                        (1 | Mosquito_species),           # random intercept by species
   family = nbinom2(),
-  data = df
+  data = df,
+  REML = TRUE
 )
 
+summary(m1_baseline)
+
+baseline_aic <- AIC(m1_baseline)
+cat("Baseline AIC:", baseline_aic, "\n")
+```
+
+In the second model, we consider random slopes for green levels in the cities, meaning that the effect of urban green differs per city.
+
+```{r}
+m2_city_green <- glmmTMB(
+  Mosquito_abundance ~ Green_level * Trap_type +
+                       Temperature * Relative_humidity +
+                       Host_abundance * Prey_abundance +
+                       Blue_area_coverage +
+                       factor(Month) +
+                      (1 + Green_level | City) +          # City random intercept + slope
+                      (1 | Location.Site:City) +        
+                      (1 | Mosquito_species),
+  family = nbinom2(),
+  data = df,
+  REML =TRUE
+)
+
+
+# Check convergence
+check_convergence(m2_city_green)
+m2_city_green$sdr$pdHess
+
+cat("AIC difference:", AIC(m2_city_green) - baseline_aic, "\n")
+
+lrt_m2 <- anova(m1_baseline, m2_city_green)$Chisq[2]
+
+p_m2 <- 0.5 * pchisq(lrt_m2, df = 2, lower.tail = FALSE) + 
+           0.5 * pchisq(lrt_m2, df = 1, lower.tail = FALSE)
+cat("p-value:", p_m2, "\n")
+```
+
+AIC difference is positive and the $H_0: \text{Cities do not differ in how urban green level affects mosquito abundance}$ is not rejected (p>0.05), the random slope of urban green level is not significant.
+
+
+```{r}
+m3_city_temp <- glmmTMB(
+  Mosquito_abundance ~ Green_level * Trap_type +
+                       Temperature * Relative_humidity +
+                       Host_abundance * Prey_abundance +
+                       Blue_area_coverage +
+                       factor(Month) +
+                      (1 + Temperature | City) +      
+                      (1 | Location.Site:City) +        
+                      (1 | Mosquito_species),
+  family = nbinom2(),
+  data = df,
+  REML = TRUE
+)
+
+# Check convergence
+check_convergence(m3_city_temp)
+m3_city_temp$sdr$pdHess
+
+cat("AIC difference:", AIC(m3_city_temp) - baseline_aic, "\n")
+
+lrt_m3 <- anova(m1_baseline, m3_city_temp)$Chisq[2]
+
+p_m3 <- 0.5 * pchisq(lrt_m3, df = 2, lower.tail = FALSE) +
+        0.5 * pchisq(lrt_m3, df = 1, lower.tail = FALSE)
+cat("p-value for Temp slope:", p_m3, "\n")
+```
+AIC difference is positive and the $H_0: \text{Cities do not differ in how temperature affects mosquito abundance}$ is retained (p>0.05), the random slope of temperature is not significant.
+
+```{r}
+m4_both_slopes <- glmmTMB(
+  Mosquito_abundance ~ Green_level * Trap_type +
+                       Temperature * Relative_humidity +
+                       Host_abundance * Prey_abundance +
+                       Blue_area_coverage +
+                       factor(Month) +
+                       (1 + Green_level + Temperature | City) +
+                       (1 | Location.Site:City) +
+                       (1 | Mosquito_species),
+  family = nbinom2(),
+  data = df,
+  REML = TRUE
+)
+
+# Check convergence
+check_convergence(m4_both_slopes)
+m4_both_slopes$sdr$pdHess
+
+# Compare m2 -> m4 (does adding temperature slope to m2 improve fit?)
+lrt_m2_m4 <- anova(m2_city_green, m4_both_slopes)$Chisq[2]
+cat("LRT stat (m2 -> m4):", lrt_m2_m4, "\n")
+p_m2_m4 <- 0.5 * pchisq(lrt_m2_m4, df = 2, lower.tail = FALSE) + 
+           0.5 * pchisq(lrt_m2_m4, df = 1, lower.tail = FALSE)
+cat("p-value (m2 -> m4):", p_m2_m4, "\n")
+
+# Compare m3 -> m4 (does adding Green slope to m3 improve fit?)
+lrt_m3_m4 <- anova(m3_city_temp, m4_both_slopes)$Chisq[2]
+cat("LRT stat (m3 -> m4):", lrt_m3_m4, "\n")
+p_m3_m4 <- 0.5 * pchisq(lrt_m3_m4, df = 2, lower.tail = FALSE) + 
+           0.5 * pchisq(lrt_m3_m4, df = 1, lower.tail = FALSE)
+cat("p-value (m3 -> m4):", p_m3_m4, "\n")
+
+# Compare all models by AIC 
+models <- list(m1_baseline = m1_baseline, m2 = m2_city_green, m3 = m3_city_temp, m4 = m4_both_slopes)
+aic_tab <- data.frame(
+  model = names(models),
+  AIC = sapply(models, AIC),
+  pdHess = sapply(models, function(m) { if (is.null(m$sdr)) NA else m$sdr$pdHess })
+)
+aic_tab <- aic_tab %>% arrange(AIC)
+print(aic_tab)
+```
+
+Across the models tested, the lowest AIC value was tested was achieved by model 2, for the remainder of the model selection procedure we will use the random effects defined in model 2. Now, we will focus on getting a more parsimonious fixed effects part by removing interaction terms in a step wise manner.
+
+
+```{r}
+m_full <- glmmTMB(
+  Mosquito_abundance ~ Green_level * Trap_type +
+                       Temperature * Relative_humidity +
+                       Host_abundance * Prey_abundance +
+                       Blue_area_coverage +
+                       factor(Month) +
+                       (1 | City / Location.Site) +      # nested random effects
+                       (1 | Mosquito_species), 
+  family = nbinom2(),
+  data = df,
+  REML = FALSE  # ML for fixed effects comparison
+)
+
+summary(m_full)
+```
+
+We start by removing the least significant interaction term which is Temperature:Relative_humidity . 
+```{r}
+m_wo_temp_hum <- glmmTMB(
+  Mosquito_abundance ~ Green_level * Trap_type +
+                       Temperature + Relative_humidity +
+                       Host_abundance * Prey_abundance +
+                       Blue_area_coverage +
+                       factor(Month) +
+                       (1 | City / Location.Site) +      # nested random effects
+                       (1 | Mosquito_species), 
+  family = nbinom2(),
+  data = df,
+  REML = FALSE  # ML for fixed effects comparison
+)
+
+summary(m_wo_temp_hum)
+anova(m_full, m_wo_temp_hum)
+```
+Removing the Temp x Humidity interaction does not significantly worsen model fit, then the interaction is not needed. We move on to the next interaction.
+
+```{r}
+m_wo_host_prey <- glmmTMB(
+  Mosquito_abundance ~ Green_level * Trap_type +
+                       Temperature + Relative_humidity +
+                       Host_abundance + Prey_abundance +
+                       Blue_area_coverage +
+                       factor(Month) +
+                       (1 | City / Location.Site) +      # nested random effects
+                       (1 | Mosquito_species), 
+  family = nbinom2(),
+  data = df,
+  REML = FALSE  # ML for fixed effects comparison
+)
+
+summary(m_wo_host_prey)
+anova(m_wo_temp_hum, m_wo_host_prey)
+```
+Removing the Host × Prey interaction does not significantly worsen model fit, then the interaction is not needed. The last interaction is significant, therefore we move to the main effects.
+
+```{r}
+m_wo_blue <- glmmTMB(
+  Mosquito_abundance ~ Green_level * Trap_type +
+                       Temperature + Relative_humidity +
+                       Host_abundance + Prey_abundance +
+                       factor(Month) +  # Remove Blue
+                       (1 | City / Location.Site) +
+                       (1 | Mosquito_species), 
+  family = nbinom2(),
+  data = df,
+  REML = FALSE
+)
+
+summary(m_wo_blue)
+anova(m_wo_host_prey, m_wo_blue)
+```
+Month showes mixed significance, so we will try removing it and compare the model fits.
+
+```{r}
+m_wo_month <- glmmTMB(
+  Mosquito_abundance ~ Green_level * Trap_type +
+                       Temperature + Relative_humidity +
+                       Host_abundance + Prey_abundance +
+                       # Remove Month entirely
+                       (1 | City / Location.Site) +
+                       (1 | Mosquito_species), 
+  family = nbinom2(),
+  data = df,
+  REML = FALSE
+)
+
+anova(m_wo_blue, m_wo_month)
+```
+Removing the month worsens the fit, so our final model is:
+
+```{r}
+m_final <- glmmTMB(
+  Mosquito_abundance ~ Green_level * Trap_type +
+                       Temperature + Relative_humidity +
+                       Host_abundance + Prey_abundance +
+                       factor(Month) +  # Remove Blue
+                       (1 | City / Location.Site) +
+                       (1 | Mosquito_species), 
+  family = nbinom2(),
+  data = df,
+  REML = TRUE
+)
 
 ```
 
@@ -74,7 +293,7 @@ model_abundance <- glmmTMB(
 
 
 ```{r}
-summary(model_abundance)
+summary(m1)
 
 ```
 

@@ -1,5 +1,7 @@
 ---
 title: "Example Sampling Procedure"
+author: "Atakan_Akgun, Aylin Karapanar"
+date: "`r Sys.Date()`"
 output: html_notebook
 ---
 

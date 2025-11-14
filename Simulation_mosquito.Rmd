@@ -1,10 +1,11 @@
 ---
-title: "Simulation"
-author: "Atakan_Akgun"
+title: "Data Simulation and Missingness"
+author: "Atakan Akgun, Aylin Karapanar"
 date: "`r Sys.Date()`"
-output: pdf_document
+output: html_notebook
 ---
 
+# Data Simulation
 
 ```{r}
 library(dplyr)
@@ -12,22 +13,25 @@ library(tidyr)
 library(lubridate)
 library(writexl)
 library(purrr)
+library(MASS) 
+library(naniar)
+library(ggplot2)
+library(naniar)
+
 set.seed(1234)
 ```
 
+## Data simualtion with simulated random effects
+
 ```{r}
-Country <- c("Netherlands", "France", "Spain")
-City <- c("Utrecht", "Nijmegen", "Montpellier", "Barcelona")
+Country <- c("Netherlands", "France", "Spain", "Morocco")
+City <- c("Utrecht", "Nijmegen", "Montpellier", "Barcelona", "Rabat", "Casablanca")
 Sites <- paste0("Site_", 1:9)
 Trap_type <- c("Light_CO2", "HumanOdor_CO2")
 Mosquito_species <- c("Culex quinquefasciatus", "Aedes aegypti",
                       "Aedes albopictus", "Anopheles gambiae", "Culex pipiens")
 Sampling_dates <- seq.Date(as.Date("2024-01-01"), as.Date("2024-12-31"), by = "month")
 
-
-```
-
-```{r}
 design <- expand.grid(
   City = City,
   Site = Sites,
@@ -35,32 +39,131 @@ design <- expand.grid(
   stringsAsFactors = FALSE
 )
 
-design$Country <- ifelse(design$City %in% c("Utrecht", "Nijmegen"), "Netherlands",
-                         ifelse(design$City == "Montpellier", "France", "Spain"))
-```
+design$Country <- dplyr::case_when(
+  design$City %in% c("Utrecht", "Nijmegen") ~ "Netherlands",
+  design$City == "Montpellier" ~ "France",
+  design$City == "Barcelona" ~ "Spain",
+  design$City %in% c("Rabat", "Casablanca") ~ "Morocco",
+  TRUE ~ NA_character_
+)
+
+design <- design %>%
+  group_by(City) %>%
+  mutate(Location.Site = as.integer(factor(Site))) %>%
+  ungroup()
+
+# Generate environmental variables
+
+# Add month and season
+design <- design %>%
+  mutate(
+    Month = month(Sampling_date),
+    Season = case_when(
+      Month %in% c(12, 1, 2) ~ "Winter",
+      Month %in% c(3, 4, 5) ~ "Spring",
+      Month %in% c(6, 7, 8) ~ "Summer",
+      Month %in% c(9, 10, 11) ~ "Fall"
+    )
+  )
 
 
-```{r}
-#environmental variables
-design$Green_level <- sample(1:3, nrow(design), replace = TRUE)
-design$Green_area_coverage <- round(runif(nrow(design), 5, 80), 2)
-design$Blue_area_coverage <- round(runif(nrow(design), 2, 50), 2)
-design$Temperature <- round(rnorm(nrow(design), mean = 22, sd = 5), 2)
-design$Relative_humidity <- round(runif(nrow(design), 40, 90), 2)
-design$Wind_speed_10m <- round(runif(nrow(design), 0.5, 6.5), 2)
+# IMPORTANT: Green level varies WITHIN cities (not just between sites)
+# This ensures we have variation to estimate random slopes
+site_characteristics <- design %>%
+  distinct(City, Site) %>%
+  mutate(
+    # Each site has a random green level (good variation within cities)
+    Green_level = sample(1:4, n(), replace = TRUE, prob = c(0.2, 0.3, 0.3, 0.2)),
+    Green_area_coverage = case_when(
+      Green_level == 1 ~ runif(n(), 5, 25),
+      Green_level == 2 ~ runif(n(), 25, 50),
+      Green_level == 3 ~ runif(n(), 50, 75),
+      Green_level == 4 ~ runif(n(), 75, 95)
+    ),
+    Blue_area_coverage = runif(n(), 2, 50)
+  )
 
-```
+design <- design %>%
+  left_join(site_characteristics, by = c("City", "Site"))
 
-```{r}
-# Randomly assign trap types 
+# Temperature - seasonal variation by city
+city_temp_params <- data.frame(
+  City = City,
+  base_temp = c(12, 13, 16, 18, 20, 21),
+  temp_amplitude = c(8, 8, 7, 6, 5, 5)
+)
+
+design <- design %>%
+  left_join(city_temp_params, by = "City") %>%
+  mutate(
+    Temperature = base_temp + 
+                  temp_amplitude * sin(2 * pi * (Month - 3) / 12) +
+                  rnorm(n(), 0, 2),
+    Temperature = round(pmax(Temperature, 0), 2)
+  ) %>%
+  dplyr::select(-base_temp, -temp_amplitude)
+
+# Humidity - correlated with temperature
+design <- design %>%
+  mutate(
+    Relative_humidity = 80 - 0.5 * Temperature +
+                        rnorm(n(), 0, 5),
+    Relative_humidity = round(pmin(pmax(Relative_humidity, 30), 95), 2)
+  )
+
+# Wind speed - seasonal variation
+design <- design %>%
+  mutate(
+    Wind_speed_10m = case_when(
+      Season == "Winter" ~ runif(n(), 2.5, 7.5),
+      Season == "Spring" ~ runif(n(), 2.0, 6.0),
+      Season == "Summer" ~ runif(n(), 0.5, 4.5),
+      Season == "Fall" ~ runif(n(), 1.5, 5.5)
+    ),
+    Wind_speed_10m = round(Wind_speed_10m, 2)
+  )
+
+# Assign trap types
 design$Trap_type <- sample(Trap_type, nrow(design), replace = TRUE)
-```
 
-```{r}
-# Randomly assign which species were caught per site-date 
-# Each site-date will have between 2 and 5 species observed
-library(dplyr)
+city_ecology <- data.frame(
+  City = City,
+  host_base = c(70, 65, 80, 90, 95, 85),  # more hosts in warmer regions
+  prey_base = c(50, 55, 60, 75, 70, 65)
+)
 
+design <- design %>%
+  left_join(city_ecology, by = "City") %>%
+  mutate(
+    # Seasonal multipliers
+    season_multiplier = case_when(
+      Season == "Winter" ~ 0.7,
+      Season == "Spring" ~ 1.0,
+      Season == "Summer" ~ 1.3,
+      Season == "Fall"   ~ 0.9
+    ),
+    
+    # Host abundance (correlated with season + city)
+    Host_abundance = round(
+      host_base * season_multiplier +
+      rnorm(n(), 0, 10), 
+      0
+    ),
+    
+    # Prey abundance
+    Prey_abundance = round(
+      prey_base * (0.8 + 0.4 * sin(2*pi*(Month)/12)) + 
+      rnorm(n(), 0, 8),
+      0
+    ),
+    
+    Host_abundance = pmax(Host_abundance, 1),
+    Prey_abundance = pmax(Prey_abundance, 1)
+  ) %>%
+  dplyr::select(-host_base, -prey_base)
+
+
+# Expand to species level
 df <- design %>%
   mutate(n_species = sample(2:5, n(), replace = TRUE)) %>%
   rowwise() %>%
@@ -68,31 +171,117 @@ df <- design %>%
     Observed_species = list(sample(Mosquito_species, n_species))
   ) %>%
   ungroup() %>%
-  select(-n_species)
-
-
-# Expand the dataset so each species has its own row
-df <- df %>%
+  dplyr::select(-n_species) %>%
   tidyr::unnest(Observed_species) %>%
   rename(Mosquito_species = Observed_species)
 
+df <- df %>%
+  mutate(
+    Host_abundance = rpois(n(), lambda =
+      20 +
+      8 * Green_level +                  
+      5 * (Temperature / 10) +
+      rnorm(n(), 0, 3)
+    ),
+    Prey_abundance = rpois(n(), lambda =
+      40 +
+      10 * Green_level +                
+      6 * (Relative_humidity / 50) +
+      rnorm(n(), 0, 4)
+    ),
 
-```
+    # Avoid zeros
+    Host_abundance = pmax(Host_abundance, 1),
+    Prey_abundance = pmax(Prey_abundance, 1)
+  )
 
-```{r}
-# mosquito abundance
-df$Mosquito_abundance <- rpois(
-  nrow(df),
-  lambda = 10 + df$Green_level * 3 +
-    ifelse(df$Trap_type == "Light_CO2", 5, 0) +
-    rnorm(nrow(df), 0, 2)
+
+# Random effects for City (intercept and slopes)
+
+n_cities <- length(unique(df$City))
+
+Sigma_city <- matrix(c(
+  0.40^2, 0.40 * 0.20 * 0.3,  # Var(intercept), Cov(intercept, slope)
+  0.40 * 0.20 * 0.3,  0.20^2  # Cov(slope, intercept), Var(slope)
+), nrow = 2, ncol = 2)
+
+# Generate correlated random intercepts and slopes
+city_random_effects_matrix <- mvrnorm(
+  n = n_cities,
+  mu = c(0, 0),  
+  Sigma = Sigma_city
 )
-df$Mosquito_abundance[df$Mosquito_abundance < 0] <- 0
-```
+
+city_random_effects <- data.frame(
+  City = unique(df$City),
+  city_intercept = city_random_effects_matrix[, 1],
+  city_green_slope = city_random_effects_matrix[, 2]  # Random slope
+)
+
+# Random intercepts for Species
+species_random_effects <- data.frame(
+  Mosquito_species = unique(df$Mosquito_species),
+  species_intercept = rnorm(length(unique(df$Mosquito_species)), mean = 0, sd = 0.3)
+)
+
+# Random intercepts for Site nested within City
+site_random_effects <- df %>%
+  distinct(City, Site) %>%
+  mutate(
+    site_intercept = rnorm(n(), mean = 0, sd = 0.25)
+  )
+
+# Join random effects
+df <- df %>%
+  left_join(city_random_effects, by = "City") %>%
+  left_join(species_random_effects, by = "Mosquito_species") %>%
+  left_join(site_random_effects, by = c("City", "Site"))
 
 
-```{r}
-# Calculate biodiversity index per site-date
+# Standardize predictors
+df <- df %>%
+  mutate(
+    Green_level_scaled = as.numeric(scale(Green_level)),
+    Temperature_scaled = as.numeric(scale(Temperature)),
+    Humidity_scaled = as.numeric(scale(Relative_humidity)),
+    Wind_scaled = as.numeric(scale(Wind_speed_10m)),
+    Blue_area_scaled = as.numeric(scale(Blue_area_coverage))
+  )
+
+# Generate abundance with random slopes!
+df <- df %>%
+  mutate(
+    log_mu = 2.0 +                                                        
+         0.30 * Green_level_scaled +                                  
+         0.40 * ifelse(Trap_type == "Light_CO2", 1, 0) +             
+         0.20 * Temperature_scaled +                                  
+         0.15 * Humidity_scaled +                                 
+         -0.10 * Wind_scaled +                                    
+         0.05 * Blue_area_scaled +                                    
+         0.15 * Green_level_scaled * ifelse(Trap_type == "Light_CO2", 1, 0) +  
+         0.10 * log(Host_abundance) +                     
+         0.20 * log(Prey_abundance) +                     
+         0.15 * log(Host_abundance) * log(Prey_abundance) +
+
+         # random effects
+         city_intercept +                                             
+         city_green_slope * Green_level_scaled +                      
+         species_intercept +                                          
+         site_intercept,
+    
+    mu = exp(log_mu),
+    Mosquito_abundance = rnbinom(n(), mu = mu, size = 2)
+  )
+
+# Clean up
+df <- df %>%
+  dplyr::select(-log_mu, -mu, -city_intercept, -city_green_slope, 
+                -species_intercept, -site_intercept,
+                -Green_level_scaled, -Temperature_scaled, -Humidity_scaled, 
+                -Wind_scaled, -Blue_area_scaled)
+
+# Calculate biodiversity index
+
 df <- df %>%
   group_by(City, Site, Sampling_date) %>%
   mutate(
@@ -100,198 +289,306 @@ df <- df %>%
     Biodiversity_index = -sum(p_i * log(p_i + 1e-8), na.rm = TRUE)
   ) %>%
   ungroup() %>%
-  select(-p_i)
-```
+  dplyr::select(-p_i)
 
 
-```{r}
-
-# --- Save file ---------------------------------------------------------------
-if (!requireNamespace("writexl", quietly = TRUE)) install.packages("writexl")
-writexl::write_xlsx(df, "Mock_Mosquito_MixedEffects_Dataset.xlsx")
+write.csv(df, "./data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv", 
+          row.names = FALSE)
 
 ```
 
 
-
-#### Not done Realistic mock data
+# Missing data simulation & tests
 
 ```{r}
-# generate_mock_mosquito_data.R
-# -----------------------------------------------------------------------------
-# Script to simulate a mock mosquito dataset matching the structure:
-# Columns:
-# Country, City, Location/Site, Sampling_date, Trap_type, Green_level,
-# Green_area_coverage, Blue_area_coverage, Temperature, Relative_humidity,
-# Wind_speed_10m, Mosquito_species, Mosquito_abundance, Biodiversity_index
-#
-# Produces ~2160 rows: 4 cities x 9 sites x 12 months x 5 species.
-# -----------------------------------------------------------------------------
+# Missingness patterns + visualizations + tests + MNAR sensitivity analysis
+# Three scenarios will be simulated:
+# MCAR: Data logger battery dies at random time
+# MAR: Traps fail more often during heavy rain 
+# MNAR: High mosquito abundance causes trap failure
 
-set.seed(2025)
 
-# --- Packages ----------------------------------------------------------------
-if (!requireNamespace("writexl", quietly = TRUE)) {
-  install.packages("writexl")
+needed <- c("dplyr","tidyr","lubridate","ggplot2","naniar","mice","gridExtra")
+for (pkg in needed) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
 }
-library(dplyr)
-library(lubridate)
-library(writexl)
+library(dplyr); library(tidyr); library(ggplot2); library(naniar); library(mice); library(gridExtra)
 
-# --- Study design ------------------------------------------------------------
-countries <- c("Netherlands", "France", "Spain")
-# Cities according to your study (Netherlands has two cities)
-city_list <- list(
-  Netherlands = c("Utrecht", "Nijmegen"),
-  France = c("Montpellier"),
-  Spain = c("Barcelona")
-)
+```
+```{r}
+df <- df %>%
+  mutate(
+    SiteDateID = paste(City, Site, Sampling_date, sep = "_")
+  )
 
-# Flatten cities to a vector and keep country mapping
-cities <- unlist(city_list)
-city_country_map <- data.frame(
-  City = cities,
-  Country = unlist(lapply(names(city_list), function(cty) rep(cty, length(city_list[[cty]])))),
-  stringsAsFactors = FALSE
-)
-# Sites per city
-sites_per_city <- 9
+# for MAR mechanism (realistic: more rain -> trap failure)
+# ainfall is correlated with Relative_humidity to be plausible
+df <- df %>%
+  mutate(
+    Rainfall_mm = round(pmax(0, rnorm(n(), mean = (Relative_humidity - 50) * 0.6 + 2, sd = 8)), 1)
+  )
 
-# Sampling dates: 12 monthly samples (one year)
-start_date <- as.Date("2025-03-15")
-sampling_dates <- start_date %m+% months(0:11)   # 12 months
+# Keep a copy of the complete "truth" to compare later
+truth <- df
+```
 
-# Trap types and mosquito species
-trap_types <- c("Light_CO2", "HumanOdor_CO2")
-mosquito_species <- c("Aedes albopictus", "Culex pipiens", "Anopheles gambiae",
-                      "Aedes aegypti", "Culex quinquefasciatus")
+```{r}
+# 1) MCAR: Weather data logger battery dies at random times
+# Mechanism: for a random 8% of site-dates, the logger battery dies and we lose Weather columns:
+prop_mcar <- 0.05
+site_dates <- unique(df$SiteDateID)
+mcar_ids <- sample(site_dates, size = round(length(site_dates) * prop_mcar), replace = FALSE)
 
-# Greenness levels (1..4) and mapping to percent mean
-green_levels <- 1:4
+df_mcar <- df %>%
+  mutate(
+    is_MCAR = SiteDateID %in% mcar_ids
+  )
 
-# --- Build the sampling grid -------------------------------------------------
-rows <- list()
-for (i in seq_len(nrow(city_country_map))) {
-  city <- city_country_map$City[i]
-  country <- city_country_map$Country[i]
-  
-  for (site in 1:sites_per_city) {
-    # Assign a base greenness level per site (random but balanced across levels)
-    green_level_site <- sample(green_levels, 1)
-    # green percent drawn around 25*level with some SD
-    green_pct_site <- pmin(100, pmax(0, rnorm(1, mean = 25 * green_level_site, sd = 6)))
-    # blue coverage inversely related to greenness but with noise
-    blue_pct_site <- pmin(100, pmax(0, rnorm(1, mean = 10 * (5 - green_level_site), sd = 7)))
-    
-    for (sd in sampling_dates) {
-      # add a small random day jitter so dates look realistic (±7 days)
-      sampling_date <- sd + sample(-7:7, 1)
-      
-      # city-level temperature baseline (approx)
-      temp_base <- switch(city,
-                          "Barcelona" = 25,
-                          "Montpellier" = 23,
-                          "Utrecht" = 17,
-                          "Nijmegen" = 18,
-                          20)
-      # simulate temperature with seasonal effect: warmer in summer months
-      month_factor <- sin(2 * pi * (month(sampling_date) / 12)) # -1..1
-      temperature <- round(rnorm(1, mean = temp_base + 6 * month_factor - 0.5 * green_level_site, sd = 2.5), 2)
-      
-      # humidity inversely related to temperature a bit, with noise
-      relative_humidity <- round(pmin(100, pmax(20, rnorm(1, mean = 70 - 0.6 * (temperature - 15) + green_level_site*1.5, sd = 7))), 2)
-      
-      # wind speed random
-      wind_speed <- round(runif(1, 0.2, 6.5), 2)
-      
-      # biodiversity index: loosely linked to green pct
-      biodiversity_index <- round(pmin(3, pmax(0.3, rnorm(1, mean = 0.02 * green_pct_site + 0.8, sd = 0.35))), 2)
-      
-      # choose trap type for this sample (random)
-      trap_type <- sample(trap_types, 1)
-      
-      # For each species create one row (option A: species-level rows)
-      for (sp in mosquito_species) {
-        # species-specific relative abundance multiplier
-        sp_mult <- switch(sp,
-                          "Aedes albopictus" = 1.25,
-                          "Culex pipiens" = 1.00,
-                          "Anopheles gambiae" = 0.85,
-                          "Aedes aegypti" = 1.10,
-                          "Culex quinquefasciatus" = 0.95,
-                          1.0)
-        # trap efficiency multiplier
-        trap_mult <- ifelse(trap_type == "Light_CO2", 1.0, 1.05)
-        
-        # seasonal multiplier (higher in summer months)
-        season_mult <- pmax(0.2, 1 + 0.9 * month_factor)  # ~0.1 to 1.9
-        
-        # Base mean abundance depends on greenness, species, trap, season, temp
-        base_mu <- (6 * green_level_site + 1.2 * (green_pct_site / 25)) * sp_mult * trap_mult * season_mult + 0.15 * (temperature - 15)
-        base_mu <- pmax(0.5, base_mu)  # ensure positive
-        
-        # Add site-level random noise to mean
-        site_noise <- rnorm(1, mean = 1, sd = 0.12)
-        mu <- base_mu * site_noise
-        
-        # Simulate counts with overdispersion (negative binomial)
-        # size parameter controls overdispersion; smaller -> more overdispersion
-        abundance <- rnbinom(1, mu = mu, size = 1.8)
-        
-        rows[[length(rows) + 1]] <- data.frame(
-          Country = country,
-          City = city,
-          LocationSite = site,          # temporary name; will rename to 'Location/Site'
-          Sampling_date = as.character(sampling_date),  # keep as character for exact file-like format
-          Trap_type = trap_type,
-          Green_level = green_level_site,
-          Green_area_coverage = round(green_pct_site + rnorm(1, 0, 2), 2),  # small noise
-          Blue_area_coverage = round(blue_pct_site + rnorm(1, 0, 2), 2),
-          Temperature = temperature,
-          Relative_humidity = relative_humidity,
-          Wind_speed_10m = wind_speed,
-          Mosquito_species = sp,
-          Mosquito_abundance = as.integer(abundance),
-          Biodiversity_index = biodiversity_index,
-          stringsAsFactors = FALSE
-        )
-      } # species loop
-    } # date loop
-  } # site loop
-} # city loop
+# Apply MCAR: set weather variables battery-recorded columns to NA for those site-dates
+weather_vars <- c("Temperature", "Relative_humidity", "Wind_speed_10m", "Rainfall_mm", "Green_area_coverage", "Blue_area_coverage")
+df_mcar <- df_mcar %>%
+  mutate(across(all_of(weather_vars), ~ ifelse(is_MCAR, NA, .)))
 
-# Combine into a single data frame
-df_sim <- bind_rows(rows)
+# 2) MAR: Traps fail more often during heavy rain (Missing At Random)
+# Mechanism: probability of trapping failure increases with Rainfall_mm (observable).
+# Create a trap_failure_MAR indicator (some records have Mosquito_abundance and Biodiversity set NA).
+# Use logistic function so we can test with logistic regression.
+# baseline prob small, then increases for heavier rain
+logit <- function(x) 1 / (1 + exp(-x))
 
-# Rename LocationSite -> Location/Site to match exact requested column name
-names(df_sim)[names(df_sim) == "LocationSite"] <- "Location/Site"
+df_mar <- df_mcar %>%
+  mutate(
+    # linear predictor for trap failure probability
+    lp_trapfail = -3 + 0.12 * Rainfall_mm + 0.03 * Wind_speed_10m,  # heavier rain & wind -> more failures
+    p_trapfail = ifelse(is.na(Rainfall_mm), 0.05, logit(lp_trapfail)), # if rainfall missing (MCAR), still small baseline prob
+    trapfail_MAR = rbinom(n(), size = 1, prob = p_trapfail)
+  )
 
-# Convert Sampling_date to YYYY-MM-DD string (consistent formatting)
-df_sim$Sampling_date <- as.character(as.Date(df_sim$Sampling_date))
+# Apply MAR: when trapfail_MAR == 1 set Mosquito_abundance and Biodiversity_index to NA (trap failed)
+df_mar <- df_mar %>%
+  mutate(
+    Mosquito_abundance_MAR = ifelse(trapfail_MAR == 1, NA, Mosquito_abundance),
+    Biodiversity_index_MAR = ifelse(trapfail_MAR == 1, NA, Biodiversity_index)
+  )
 
-# Optional: shuffle rows to mimic real data ordering
-df_sim <- df_sim[sample(seq_len(nrow(df_sim))), ]
+# 3) MNAR: High mosquito abundance causes trap failure (Missing Not At Random)
+# Mechanism: probability of missingness depends directly on the (true) Mosquito_abundance.
+# We'll create varying MNAR strengths (delta) for a sensitivity analysis.
+# We'll define a function that imposes MNAR missingness given a delta shift and returns dataset + metric.
 
-# Reorder columns to exactly the requested order
-df_sim <- df_sim %>%
-  select(Country, City, `Location/Site`, Sampling_date, Trap_type, Green_level,
-         Green_area_coverage, Blue_area_coverage, Temperature, Relative_humidity,
-         Wind_speed_10m, Mosquito_species, Mosquito_abundance, Biodiversity_index)
+impose_MNAR <- function(data, delta = 0, propcap = NULL) {
+  # delta: numeric shift in the logistic predictor to increase/decrease MNAR effect
+  # propcap: optional maximum proportion to target
+  lp_base <- -4 + 0.25 * data$Mosquito_abundance  # higher abundance -> higher missing prob
+  lp <- lp_base + delta
+  p_mnar <- 1 / (1 + exp(-lp))
+  # Optionally scale probabilities so max is propcap 
+  if (!is.null(propcap)) {
+    p_mnar <- p_mnar / max(p_mnar, na.rm = TRUE) * propcap
+  }
+  mnar_flag <- rbinom(nrow(data), 1, prob = p_mnar)
+  data %>%
+    mutate(
+      trapfail_MNAR = mnar_flag,
+      Mosquito_abundance_MNAR = ifelse(trapfail_MNAR == 1, NA, Mosquito_abundance),
+      Biodiversity_index_MNAR  = ifelse(trapfail_MNAR == 1, NA, Biodiversity_index)
+    )
+}
 
-# Quick sanity checks
-cat("Generated rows:", nrow(df_sim), "\n")
-cat("Unique cities:", paste(unique(df_sim$City), collapse = ", "), "\n")
-cat("Unique species:", paste(unique(df_sim$Mosquito_species), collapse = ", "), "\n")
+# Example: impose a single MNAR scenario (delta = 0)
+df_mnar_example <- impose_MNAR(df_mar, delta = 0, propcap = 0.35) 
 
-# Write outputs
-out_csv <- "Mock_Mosquito_MixedEffects_Dataset_fromR.csv"
-out_xlsx <- "Mock_Mosquito_MixedEffects_Dataset_fromR.xlsx"
+# Combine final dataset columns (with all three missingness indicators)
+# We'll keep separate columns:
+df_final <- df_mnar_example %>%
+  dplyr::select(-lp_trapfail, -p_trapfail) %>%
+  rename(
+    Mosquito_abundance_orig = Mosquito_abundance,
+    Biodiversity_index_orig = Biodiversity_index,
+    Mosquito_abundance = Mosquito_abundance_MNAR,       
+    Biodiversity_index = Biodiversity_index_MNAR
+  )
 
-write.csv(df_sim, out_csv, row.names = FALSE)
-writexl::write_xlsx(df_sim, out_xlsx)
+# But also keep the MAR-only and MCAR-only markers for diagnostics:
+df_final <- df_final %>%
+  mutate(
+    MCAR_flag = is_MCAR,
+    MAR_flag  = trapfail_MAR == 1,
+    MNAR_flag = trapfail_MNAR == 1
+  )
+```
 
-cat("Saved CSV to", out_csv, "\n")
-cat("Saved XLSX to", out_xlsx, "\n")
+```{r, fig.width=10 fig.height= 8}
+# Missingness heatmap for main variables
 
+p1 <- df_final %>%
+  slice_sample(n = 500) %>%
+  select(Temperature, Relative_humidity, Wind_speed_10m, Rainfall_mm,
+         Mosquito_abundance, Biodiversity_index) %>%
+  naniar::vis_miss(sort_miss = TRUE) +
+  ggtitle("Missingness Map (Subset of 500 Rows)") +
+  scale_fill_manual(values = c("grey90", "#2c7bb6"),
+                    name = "Data Status",
+                    labels = c("Present", "Missing")) +
+  scale_x_discrete(labels = function(x) gsub("_", "\n", x)) +  
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(size = 10), 
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+# 2) Missingness rate by Rainfall 
+mar_rates <- df_final %>%
+  mutate(Missing_abundance = is.na(Mosquito_abundance)) %>%
+  # Create bins
+  mutate(Rainfall_bin = case_when(
+    is.na(Rainfall_mm) ~ "NA",
+    Rainfall_mm <= 1 ~ "≤1",
+    Rainfall_mm <= 5 ~ "(1,5]",
+    Rainfall_mm <= 10 ~ "(5,10]",
+    Rainfall_mm <= 20 ~ "(10,20]",
+    Rainfall_mm <= 50 ~ "(20,50]",
+    TRUE ~ ">50"
+  )) %>%
+  # Convert to factor with proper order
+  mutate(Rainfall_bin = factor(Rainfall_bin, 
+                               levels = c("≤1", "(1,5]", "(5,10]", "(10,20]", "(20,50]", ">50", "NA"))) %>%
+  group_by(Rainfall_bin) %>%
+  summarize(n = n(), miss_rate = mean(Missing_abundance, na.rm = TRUE), .groups = "drop")
+
+p2 <- ggplot(mar_rates, aes(x = Rainfall_bin, y = miss_rate)) +
+  geom_col() +
+  labs(x = "Rainfall (binned, mm)", 
+       y = "Missingness rate for Mosquito_abundance",
+       title = "Missingness rate vs Rainfall (MAR expected)") +
+  theme_minimal() +
+  theme(
+    panel.grid.major.x = element_blank()
+  )
+
+# 3) Missingness vs true Mosquito_abundance 
+mnar_df <- df_final %>%
+  mutate(true_ab = Mosquito_abundance_orig,
+         missing_ab = is.na(Mosquito_abundance))
+
+mnar_plot_df <- mnar_df %>%
+  filter(!is.na(true_ab)) %>%
+  mutate(ab_bin = cut(true_ab, 
+                      breaks = seq(0, max(true_ab, na.rm = TRUE) + 5, by = 5))) %>%
+  group_by(ab_bin) %>%
+  summarize(mean_ab = mean(true_ab, na.rm = TRUE), 
+            miss_rate = mean(missing_ab),
+            .groups = "drop")
+
+p3 <- ggplot(mnar_plot_df, aes(x = ab_bin, y = miss_rate)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = 1), linewidth = 1) +
+  labs(x = "True abundance (binned)", 
+       y = "Missingness rate",
+       title = "Missingness rate vs True mosquito abundance (MNAR)") +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+# Display plots
+print(p1)
+print(p2)
+print(p3)
+
+```
+
+```{r}
+# Tests
+# 1) Test for MCAR: Little's MCAR test (
+
+
+cat("\n--- Little's MCAR test (on weather vars) ---\n")
+little_input <- df_final %>%
+  select(Temperature, Relative_humidity, Wind_speed_10m, Rainfall_mm, 
+         Green_area_coverage, Blue_area_coverage)
+
+res_little <- tryCatch({
+  mcar_test(little_input)
+}, error = function(e) {
+  message("Little's MCAR test failed: ", e$message)
+  return(NULL)
+})
+print(res_little)
+
+# 2) Test for MAR: logistic regression predicting trapfail_MAR by Rainfall (observable)
+cat("\n--- Logistic regression: MAR test (trapfail_MAR ~ Rainfall_mm + Wind_speed_10m) ---\n")
+glm_mar <- glm(trapfail_MAR ~ Rainfall_mm + Wind_speed_10m, data = df_final, family = binomial)
+summary(glm_mar)
+
+# Show effect (odds ratios)
+exp(cbind(OR = coef(glm_mar), confint(glm_mar)))
+
+# 3) MNAR: can't be tested with observed data alone (since it depends on unobserved values).
+# We'll run a sensitivity analysis by varying delta and observing the effect on mean Mosquito_abundance estimates.
+
+# Sensitivity analysis function: impose MNAR with different deltas, compute naive mean and imputed mean (mice)
+sensitivity_results <- data.frame(delta = numeric(), prop_missing = numeric(),
+                                  mean_obs = numeric(), mean_mi = numeric(), stringsAsFactors = FALSE)
+
+deltas <- seq(-2, 4, by = 1)  # vary delta from -2 to +4 (negative reduces MNAR, positive increases)
+for (d in deltas) {
+  df_sens <- impose_MNAR(df_mar, delta = d, propcap = 0.45) # on top of earlier MAR/MCAR states
+  # compute proportion missing
+  pmiss <- mean(is.na(df_sens$Mosquito_abundance_MNAR))
+  # naive observed mean (complete-case)
+  mean_obs <- mean(df_sens$Mosquito_abundance_MNAR, na.rm = TRUE)
+  # multiple imputation with mice (predictive mean matching) for a simple corrected mean
+  # Use a small number of imputations for speed
+  mi_input <- df_sens %>%
+    select(Mosquito_abundance_MNAR, Green_level, Rainfall_mm, Temperature, Trap_type) %>%
+    rename(Mosq = Mosquito_abundance_MNAR)
+  # mice needs factor variables encoded
+  mi_input$Trap_type <- as.factor(mi_input$Trap_type)
+  mi_input$Green_level <- as.factor(mi_input$Green_level)
+  imp <- tryCatch({
+    mice::mice(mi_input, m = 5, method = "pmm", seed = 2023, printFlag = FALSE)
+  }, error = function(e) {
+    NULL
+  })
+  mean_mi <- NA
+  if (!is.null(imp)) {
+    comp <- mice::complete(imp, "long", include = TRUE)
+    # compute pooled mean of Mosq across imputations
+    mean_by_imp <- comp %>%
+      filter(.imp != 0) %>%
+      group_by(.imp) %>%
+      summarize(mean_imp = mean(Mosq, na.rm = TRUE))
+    mean_mi <- mean(mean_by_imp$mean_imp, na.rm = TRUE)
+  }
+  sensitivity_results <- rbind(sensitivity_results,
+                               data.frame(delta = d, prop_missing = pmiss,
+                                          mean_obs = mean_obs, mean_mi = mean_mi))
+}
+
+# Also compute the true mean from the complete truth for comparison
+true_mean <- mean(truth$Mosquito_abundance, na.rm = TRUE)
+cat("\nTrue mean (no missingness):", true_mean, "\n")
+print(sensitivity_results)
+
+# Plot sensitivity: observed mean and MI mean vs delta with true mean line
+s_plot <- sensitivity_results %>%
+  pivot_longer(cols = c("mean_obs", "mean_mi"), names_to = "estimator", values_to = "mean_est")
+
+ggplot(s_plot, aes(x = delta, y = mean_est, color = estimator)) +
+  geom_point() + geom_line() +
+  geom_hline(yintercept = true_mean, linetype = "dashed") +
+  labs(title = "MNAR sensitivity: estimated mean abundance vs MNAR strength (delta)",
+       y = "Estimated mean Mosquito_abundance", x = "delta (MNAR strength)") +
+  scale_color_discrete(name = "Estimator", labels = c("Observed mean (complete-case)", "MI pooled mean")) +
+  theme_minimal()
+
+# Save sensitivity table
+print(sensitivity_results)
 ```
 
