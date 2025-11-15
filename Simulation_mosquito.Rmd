@@ -129,7 +129,7 @@ design$Trap_type <- sample(Trap_type, nrow(design), replace = TRUE)
 city_ecology <- data.frame(
   City = City,
   host_base = c(70, 65, 80, 90, 95, 85),  # more hosts in warmer regions
-  prey_base = c(50, 55, 60, 75, 70, 65)
+  predator_base = c(50, 55, 60, 75, 70, 65)
 )
 
 design <- design %>%
@@ -150,17 +150,19 @@ design <- design %>%
       0
     ),
     
-    # Prey abundance
-    Prey_abundance = round(
-      prey_base * (0.8 + 0.4 * sin(2*pi*(Month)/12)) + 
-      rnorm(n(), 0, 8),
-      0
-    ),
-    
-    Host_abundance = pmax(Host_abundance, 1),
-    Prey_abundance = pmax(Prey_abundance, 1)
+
+  # Predator abundance
+  Predator_abundance = round(
+        predator_base * (0.8 + 0.4 * sin(2*pi*(Month)/12)) + 
+        rnorm(n(), 0, 8),
+        0
+  ),
+  
+    Predator_abundance = pmax(Predator_abundance, 1), 
+    Host_abundance = pmax(Host_abundance, 1)
+
   ) %>%
-  dplyr::select(-host_base, -prey_base)
+  dplyr::select(-host_base, -predator_base)
 
 
 # Expand to species level
@@ -183,16 +185,16 @@ df <- df %>%
       5 * (Temperature / 10) +
       rnorm(n(), 0, 3)
     ),
-    Prey_abundance = rpois(n(), lambda =
-      40 +
-      10 * Green_level +                
-      6 * (Relative_humidity / 50) +
-      rnorm(n(), 0, 4)
-    ),
-
-    # Avoid zeros
-    Host_abundance = pmax(Host_abundance, 1),
-    Prey_abundance = pmax(Prey_abundance, 1)
+    Predator_abundance = rpois(
+      n(),
+      lambda =
+        40 +
+        10 * Green_level +                
+        6 * (Relative_humidity / 50) +
+        rnorm(n(), 0, 4)
+),
+    Predator_abundance = pmax(Predator_abundance, 1), 
+    Host_abundance = pmax(Host_abundance, 1)
   )
 
 
@@ -260,8 +262,9 @@ df <- df %>%
          0.05 * Blue_area_scaled +                                    
          0.15 * Green_level_scaled * ifelse(Trap_type == "Light_CO2", 1, 0) +  
          0.10 * log(Host_abundance) +                     
-         0.20 * log(Prey_abundance) +                     
-         0.15 * log(Host_abundance) * log(Prey_abundance) +
+        -0.50 * log(Predator_abundance) +                     
+        0.15 * log(Host_abundance) * log(Predator_abundance)  + 
+
 
          # random effects
          city_intercept +                                             
