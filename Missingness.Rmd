@@ -1,0 +1,306 @@
+---
+title: " Missing data simulation & tests"
+author: "Atakan_Akgun, Aylin Karapanar"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+
+This notebook includes three different scenarios of missingness each with a different missingness mechanisms. The three scenarios are:
+\begin{itemize}
+  \item MCAR: Data logger battery dies at random time
+  \item MAR: Traps fail more often during heavy rain 
+  \item MNAR: High mosquito abundance causes trap failure
+\end{itemize}
+
+# Set-up
+```{r}
+# Get needed libraries
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(maniar)
+library(mice)
+library(gridExtra)
+```
+```{r}
+
+df <- 
+df <- df %>%
+  mutate(
+    SiteDateID = paste(City, Site, Sampling_date, sep = "_")
+  )
+
+# for MAR mechanism (realistic: more rain -> trap failure)
+# Rainfall is correlated with Relative_humidity to be plausible
+df <- df %>%
+  mutate(
+    Rainfall_mm = round(pmax(0, rnorm(n(), mean = (Relative_humidity - 50) * 0.6 + 2, sd = 8)), 1)
+  )
+
+# Keep a copy of the complete "truth" to compare later
+truth <- df
+```
+
+# 1) MCAR: Weather data logger battery dies at random times
+
+```{r}
+# Mechanism: for a random 8% of site-dates, the logger battery dies and we lose Weather columns:
+prop_mcar <- 0.05
+site_dates <- unique(df$SiteDateID)
+mcar_ids <- sample(site_dates, size = round(length(site_dates) * prop_mcar), replace = FALSE)
+
+df_mcar <- df %>%
+  mutate(
+    is_MCAR = SiteDateID %in% mcar_ids
+  )
+
+# Apply MCAR: set weather variables battery-recorded columns to NA for those site-dates
+weather_vars <- c("Temperature", "Relative_humidity", "Wind_speed_10m", "Rainfall_mm", "Green_area_coverage", "Blue_area_coverage")
+df_mcar <- df_mcar %>%
+  mutate(across(all_of(weather_vars), ~ ifelse(is_MCAR, NA, .)))
+
+# 2) MAR: Traps fail more often during heavy rain (Missing At Random)
+# Mechanism: probability of trapping failure increases with Rainfall_mm (observable).
+# Create a trap_failure_MAR indicator (some records have Mosquito_abundance and Biodiversity set NA).
+# Use logistic function so we can test with logistic regression.
+# baseline prob small, then increases for heavier rain
+logit <- function(x) 1 / (1 + exp(-x))
+
+df_mar <- df_mcar %>%
+  mutate(
+    # linear predictor for trap failure probability
+    lp_trapfail = -3 + 0.12 * Rainfall_mm + 0.03 * Wind_speed_10m,  # heavier rain & wind -> more failures
+    p_trapfail = ifelse(is.na(Rainfall_mm), 0.05, logit(lp_trapfail)), # if rainfall missing (MCAR), still small baseline prob
+    trapfail_MAR = rbinom(n(), size = 1, prob = p_trapfail)
+  )
+
+# Apply MAR: when trapfail_MAR == 1 set Mosquito_abundance and Biodiversity_index to NA (trap failed)
+df_mar <- df_mar %>%
+  mutate(
+    Mosquito_abundance_MAR = ifelse(trapfail_MAR == 1, NA, Mosquito_abundance),
+    Biodiversity_index_MAR = ifelse(trapfail_MAR == 1, NA, Biodiversity_index)
+  )
+
+# 3) MNAR: High mosquito abundance causes trap failure (Missing Not At Random)
+# Mechanism: probability of missingness depends directly on the (true) Mosquito_abundance.
+# We'll create varying MNAR strengths (delta) for a sensitivity analysis.
+# We'll define a function that imposes MNAR missingness given a delta shift and returns dataset + metric.
+
+impose_MNAR <- function(data, delta = 0, propcap = NULL) {
+  # delta: numeric shift in the logistic predictor to increase/decrease MNAR effect
+  # propcap: optional maximum proportion to target
+  lp_base <- -4 + 0.25 * data$Mosquito_abundance  # higher abundance -> higher missing prob
+  lp <- lp_base + delta
+  p_mnar <- 1 / (1 + exp(-lp))
+  # Optionally scale probabilities so max is propcap 
+  if (!is.null(propcap)) {
+    p_mnar <- p_mnar / max(p_mnar, na.rm = TRUE) * propcap
+  }
+  mnar_flag <- rbinom(nrow(data), 1, prob = p_mnar)
+  data %>%
+    mutate(
+      trapfail_MNAR = mnar_flag,
+      Mosquito_abundance_MNAR = ifelse(trapfail_MNAR == 1, NA, Mosquito_abundance),
+      Biodiversity_index_MNAR  = ifelse(trapfail_MNAR == 1, NA, Biodiversity_index)
+    )
+}
+
+# Example: impose a single MNAR scenario (delta = 0)
+df_mnar_example <- impose_MNAR(df_mar, delta = 0, propcap = 0.35) 
+
+# Combine final dataset columns (with all three missingness indicators)
+# We'll keep separate columns:
+df_final <- df_mnar_example %>%
+  dplyr::select(-lp_trapfail, -p_trapfail) %>%
+  rename(
+    Mosquito_abundance_orig = Mosquito_abundance,
+    Biodiversity_index_orig = Biodiversity_index,
+    Mosquito_abundance = Mosquito_abundance_MNAR,       
+    Biodiversity_index = Biodiversity_index_MNAR
+  )
+
+# But also keep the MAR-only and MCAR-only markers for diagnostics:
+df_final <- df_final %>%
+  mutate(
+    MCAR_flag = is_MCAR,
+    MAR_flag  = trapfail_MAR == 1,
+    MNAR_flag = trapfail_MNAR == 1
+  )
+```
+
+```{r, fig.width=10 fig.height= 8}
+# Missingness heatmap for main variables
+
+p1 <- df_final %>%
+  slice_sample(n = 500) %>%
+  select(Temperature, Relative_humidity, Wind_speed_10m, Rainfall_mm,
+         Mosquito_abundance, Biodiversity_index) %>%
+  naniar::vis_miss(sort_miss = TRUE) +
+  ggtitle("Missingness Map (Subset of 500 Rows)") +
+  scale_fill_manual(values = c("grey90", "#2c7bb6"),
+                    name = "Data Status",
+                    labels = c("Present", "Missing")) +
+  scale_x_discrete(labels = function(x) gsub("_", "\n", x)) +  
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(size = 10), 
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+# 2) Missingness rate by Rainfall 
+mar_rates <- df_final %>%
+  mutate(Missing_abundance = is.na(Mosquito_abundance)) %>%
+  # Create bins
+  mutate(Rainfall_bin = case_when(
+    is.na(Rainfall_mm) ~ "NA",
+    Rainfall_mm <= 1 ~ "≤1",
+    Rainfall_mm <= 5 ~ "(1,5]",
+    Rainfall_mm <= 10 ~ "(5,10]",
+    Rainfall_mm <= 20 ~ "(10,20]",
+    Rainfall_mm <= 50 ~ "(20,50]",
+    TRUE ~ ">50"
+  )) %>%
+  # Convert to factor with proper order
+  mutate(Rainfall_bin = factor(Rainfall_bin, 
+                               levels = c("≤1", "(1,5]", "(5,10]", "(10,20]", "(20,50]", ">50", "NA"))) %>%
+  group_by(Rainfall_bin) %>%
+  summarize(n = n(), miss_rate = mean(Missing_abundance, na.rm = TRUE), .groups = "drop")
+
+p2 <- ggplot(mar_rates, aes(x = Rainfall_bin, y = miss_rate)) +
+  geom_col() +
+  labs(x = "Rainfall (binned, mm)", 
+       y = "Missingness rate for Mosquito_abundance",
+       title = "Missingness rate vs Rainfall (MAR expected)") +
+  theme_minimal() +
+  theme(
+    panel.grid.major.x = element_blank()
+  )
+
+# 3) Missingness vs true Mosquito_abundance 
+mnar_df <- df_final %>%
+  mutate(true_ab = Mosquito_abundance_orig,
+         missing_ab = is.na(Mosquito_abundance))
+
+mnar_plot_df <- mnar_df %>%
+  filter(!is.na(true_ab)) %>%
+  mutate(ab_bin = cut(true_ab, 
+                      breaks = seq(0, max(true_ab, na.rm = TRUE) + 5, by = 5))) %>%
+  group_by(ab_bin) %>%
+  summarize(mean_ab = mean(true_ab, na.rm = TRUE), 
+            miss_rate = mean(missing_ab),
+            .groups = "drop")
+
+p3 <- ggplot(mnar_plot_df, aes(x = ab_bin, y = miss_rate)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = 1), linewidth = 1) +
+  labs(x = "True abundance (binned)", 
+       y = "Missingness rate",
+       title = "Missingness rate vs True mosquito abundance (MNAR)") +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+# Display plots
+print(p1)
+print(p2)
+print(p3)
+
+```
+
+```{r}
+# Tests
+# 1) Test for MCAR: Little's MCAR test (
+
+
+cat("\n--- Little's MCAR test (on weather vars) ---\n")
+little_input <- df_final %>%
+  select(Temperature, Relative_humidity, Wind_speed_10m, Rainfall_mm, 
+         Green_area_coverage, Blue_area_coverage)
+
+res_little <- tryCatch({
+  mcar_test(little_input)
+}, error = function(e) {
+  message("Little's MCAR test failed: ", e$message)
+  return(NULL)
+})
+print(res_little)
+
+# 2) Test for MAR: logistic regression predicting trapfail_MAR by Rainfall (observable)
+cat("\n--- Logistic regression: MAR test (trapfail_MAR ~ Rainfall_mm + Wind_speed_10m) ---\n")
+glm_mar <- glm(trapfail_MAR ~ Rainfall_mm + Wind_speed_10m, data = df_final, family = binomial)
+summary(glm_mar)
+
+# Show effect (odds ratios)
+exp(cbind(OR = coef(glm_mar), confint(glm_mar)))
+
+# 3) MNAR: can't be tested with observed data alone (since it depends on unobserved values).
+# We'll run a sensitivity analysis by varying delta and observing the effect on mean Mosquito_abundance estimates.
+
+# Sensitivity analysis function: impose MNAR with different deltas, compute naive mean and imputed mean (mice)
+sensitivity_results <- data.frame(delta = numeric(), prop_missing = numeric(),
+                                  mean_obs = numeric(), mean_mi = numeric(), stringsAsFactors = FALSE)
+
+deltas <- seq(-2, 4, by = 1)  # vary delta from -2 to +4 (negative reduces MNAR, positive increases)
+for (d in deltas) {
+  df_sens <- impose_MNAR(df_mar, delta = d, propcap = 0.45) # on top of earlier MAR/MCAR states
+  # compute proportion missing
+  pmiss <- mean(is.na(df_sens$Mosquito_abundance_MNAR))
+  # naive observed mean (complete-case)
+  mean_obs <- mean(df_sens$Mosquito_abundance_MNAR, na.rm = TRUE)
+  # multiple imputation with mice (predictive mean matching) for a simple corrected mean
+  # Use a small number of imputations for speed
+  mi_input <- df_sens %>%
+    select(Mosquito_abundance_MNAR, Green_level, Rainfall_mm, Temperature, Trap_type) %>%
+    rename(Mosq = Mosquito_abundance_MNAR)
+  # mice needs factor variables encoded
+  mi_input$Trap_type <- as.factor(mi_input$Trap_type)
+  mi_input$Green_level <- as.factor(mi_input$Green_level)
+  imp <- tryCatch({
+    mice::mice(mi_input, m = 5, method = "pmm", seed = 2023, printFlag = FALSE)
+  }, error = function(e) {
+    NULL
+  })
+  mean_mi <- NA
+  if (!is.null(imp)) {
+    comp <- mice::complete(imp, "long", include = TRUE)
+    # compute pooled mean of Mosq across imputations
+    mean_by_imp <- comp %>%
+      filter(.imp != 0) %>%
+      group_by(.imp) %>%
+      summarize(mean_imp = mean(Mosq, na.rm = TRUE))
+    mean_mi <- mean(mean_by_imp$mean_imp, na.rm = TRUE)
+  }
+  sensitivity_results <- rbind(sensitivity_results,
+                               data.frame(delta = d, prop_missing = pmiss,
+                                          mean_obs = mean_obs, mean_mi = mean_mi))
+}
+
+# Also compute the true mean from the complete truth for comparison
+true_mean <- mean(truth$Mosquito_abundance, na.rm = TRUE)
+cat("\nTrue mean (no missingness):", true_mean, "\n")
+print(sensitivity_results)
+
+# Plot sensitivity: observed mean and MI mean vs delta with true mean line
+s_plot <- sensitivity_results %>%
+  pivot_longer(cols = c("mean_obs", "mean_mi"), names_to = "estimator", values_to = "mean_est")
+
+ggplot(s_plot, aes(x = delta, y = mean_est, color = estimator)) +
+  geom_point() + geom_line() +
+  geom_hline(yintercept = true_mean, linetype = "dashed") +
+  labs(title = "MNAR sensitivity: estimated mean abundance vs MNAR strength (delta)",
+       y = "Estimated mean Mosquito_abundance", x = "delta (MNAR strength)") +
+  scale_color_discrete(name = "Estimator", labels = c("Observed mean (complete-case)", "MI pooled mean")) +
+  theme_minimal()
+
+# Save sensitivity table
+print(sensitivity_results)
+```
+
+

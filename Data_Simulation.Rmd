@@ -1,0 +1,302 @@
+---
+title: "Data Simulation and Missingness"
+author: "Atakan Akgun, Aylin Karapanar"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+
+# Data Simulation
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(writexl)
+library(purrr)
+library(MASS) 
+library(naniar)
+library(ggplot2)
+library(naniar)
+
+set.seed(1234)
+```
+
+## Data simualtion with simulated random effects
+
+```{r}
+# Define study design
+Country <- c("Netherlands", "France", "Spain", "Morocco")
+City <- c("Utrecht", "Nijmegen", "Montpellier", "Barcelona", "Rabat", "Casablanca")
+Sites <- paste0("Site_", 1:9)
+Trap_type <- c("Light_CO2", "HumanOdor_CO2")
+Mosquito_species <- c("Culex quinquefasciatus", "Aedes aegypti",
+                      "Aedes albopictus", "Anopheles gambiae", "Culex pipiens")
+Sampling_dates <- seq.Date(as.Date("2024-01-01"), as.Date("2024-12-31"), by = "month")
+
+design <- expand.grid(
+  City = City,
+  Site = Sites,
+  Sampling_date = Sampling_dates,
+  stringsAsFactors = FALSE
+)
+
+design$Country <- dplyr::case_when(
+  design$City %in% c("Utrecht", "Nijmegen") ~ "Netherlands",
+  design$City == "Montpellier" ~ "France",
+  design$City == "Barcelona" ~ "Spain",
+  design$City %in% c("Rabat", "Casablanca") ~ "Morocco",
+  TRUE ~ NA_character_
+)
+
+design <- design %>%
+  group_by(City) %>%
+  mutate(Location.Site = as.integer(factor(Site))) %>%
+  ungroup()
+
+# Generate environmental variables
+
+# Add month and season
+design <- design %>%
+  mutate(
+    Month = month(Sampling_date),
+    Season = case_when(
+      Month %in% c(12, 1, 2) ~ "Winter",
+      Month %in% c(3, 4, 5) ~ "Spring",
+      Month %in% c(6, 7, 8) ~ "Summer",
+      Month %in% c(9, 10, 11) ~ "Fall"
+    )
+  )
+
+
+# Generate green area coverage data
+site_characteristics <- design %>%
+  distinct(City, Site) %>%
+  mutate(
+    Green_level = sample(1:3, n(), replace = TRUE),
+    Green_area_coverage = case_when(
+      Green_level == 1 ~ runif(n(), 0, 33.3),
+      Green_level == 2 ~ runif(n(), 33.3, 66.6),
+      Green_level == 3 ~ runif(n(), 66.6, 100),
+    ),
+    Blue_area_coverage = runif(n(), 2, 50)
+  )
+
+design <- design %>%
+  left_join(site_characteristics, by = c("City", "Site"))
+
+# Temperature - seasonal variation by city
+city_temp_params <- data.frame(
+  City = City,
+  base_temp = c(12, 13, 16, 18, 20, 21),
+  temp_amplitude = c(8, 8, 7, 6, 5, 5)
+)
+
+design <- design %>%
+  left_join(city_temp_params, by = "City") %>%
+  mutate(
+    Temperature = base_temp + 
+                  temp_amplitude * sin(2 * pi * (Month - 3) / 12) +
+                  rnorm(n(), 0, 2),
+    Temperature = round(pmax(Temperature, 0), 2)
+  ) %>%
+  dplyr::select(-base_temp, -temp_amplitude)
+
+# Humidity - correlated with temperature
+design <- design %>%
+  mutate(
+    Relative_humidity = 80 - 0.5 * Temperature +
+                        rnorm(n(), 0, 5),
+    Relative_humidity = round(pmin(pmax(Relative_humidity, 30), 95), 2)
+  )
+
+# Wind speed - seasonal variation
+design <- design %>%
+  mutate(
+    Wind_speed_10m = case_when(
+      Season == "Winter" ~ runif(n(), 2.5, 7.5),
+      Season == "Spring" ~ runif(n(), 2.0, 6.0),
+      Season == "Summer" ~ runif(n(), 0.5, 4.5),
+      Season == "Fall" ~ runif(n(), 1.5, 5.5)
+    ),
+    Wind_speed_10m = round(Wind_speed_10m, 2)
+  )
+
+# Assign trap types
+design$Trap_type <- sample(Trap_type, nrow(design), replace = TRUE)
+
+city_ecology <- data.frame(
+  City = City,
+  host_base = c(70, 65, 80, 90, 95, 85),  # more hosts in warmer regions
+  predator_base = c(50, 55, 60, 75, 70, 65)
+)
+
+design <- design %>%
+  left_join(city_ecology, by = "City") %>%
+  mutate(
+    # Seasonal multipliers
+    season_multiplier = case_when(
+      Season == "Winter" ~ 0.7,
+      Season == "Spring" ~ 1.0,
+      Season == "Summer" ~ 1.3,
+      Season == "Fall"   ~ 0.9
+    ),
+    
+    # Host abundance (correlated with season + city)
+    Host_abundance = round(
+      host_base * season_multiplier +
+      rnorm(n(), 0, 10), 
+      0
+    ),
+    
+
+  # Predator abundance
+  Predator_abundance = round(
+        predator_base * (0.8 + 0.4 * sin(2*pi*(Month)/12)) + 
+        rnorm(n(), 0, 8),
+        0
+  ),
+  
+    Predator_abundance = pmax(Predator_abundance, 1), 
+    Host_abundance = pmax(Host_abundance, 1)
+
+  ) %>%
+  dplyr::select(-host_base, -predator_base)
+
+
+# Expand to species level
+df <- design %>%
+  mutate(n_species = sample(2:5, n(), replace = TRUE)) %>%
+  rowwise() %>%
+  mutate(
+    Observed_species = list(sample(Mosquito_species, n_species))
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-n_species) %>%
+  tidyr::unnest(Observed_species) %>%
+  rename(Mosquito_species = Observed_species)
+
+df <- df %>%
+  mutate(
+    Host_abundance = rpois(n(), lambda =
+      20 +
+      8 * Green_level +                  
+      5 * (Temperature / 10) +
+      rnorm(n(), 0, 3)
+    ),
+    Predator_abundance = rpois(
+      n(),
+      lambda =
+        40 +
+        10 * Green_level +                
+        6 * (Relative_humidity / 50) +
+        rnorm(n(), 0, 4)
+),
+    Predator_abundance = pmax(Predator_abundance, 1), 
+    Host_abundance = pmax(Host_abundance, 1)
+  )
+
+
+# Random effects for City (intercept and slopes)
+
+n_cities <- length(unique(df$City))
+
+Sigma_city <- matrix(c(
+  0.40^2, 0.40 * 0.20 * 0.3,  # Var(intercept), Cov(intercept, slope)
+  0.40 * 0.20 * 0.3,  0.20^2  # Cov(slope, intercept), Var(slope)
+), nrow = 2, ncol = 2)
+
+# Generate correlated random intercepts and slopes
+city_random_effects_matrix <- mvrnorm(
+  n = n_cities,
+  mu = c(0, 0),  
+  Sigma = Sigma_city
+)
+
+city_random_effects <- data.frame(
+  City = unique(df$City),
+  city_intercept = city_random_effects_matrix[, 1],
+  city_green_slope = city_random_effects_matrix[, 2]  # Random slope
+)
+
+# Random intercepts for Species
+species_random_effects <- data.frame(
+  Mosquito_species = unique(df$Mosquito_species),
+  species_intercept = rnorm(length(unique(df$Mosquito_species)), mean = 0, sd = 0.3)
+)
+
+# Random intercepts for Site nested within City
+site_random_effects <- df %>%
+  distinct(City, Site) %>%
+  mutate(
+    site_intercept = rnorm(n(), mean = 0, sd = 0.25)
+  )
+
+# Join random effects
+df <- df %>%
+  left_join(city_random_effects, by = "City") %>%
+  left_join(species_random_effects, by = "Mosquito_species") %>%
+  left_join(site_random_effects, by = c("City", "Site"))
+
+
+# Standardize predictors
+df <- df %>%
+  mutate(
+    Green_level_scaled = as.numeric(scale(Green_level)),
+    Temperature_scaled = as.numeric(scale(Temperature)),
+    Humidity_scaled = as.numeric(scale(Relative_humidity)),
+    Wind_scaled = as.numeric(scale(Wind_speed_10m)),
+    Blue_area_scaled = as.numeric(scale(Blue_area_coverage))
+  )
+
+# Generate abundance with random slopes!
+df <- df %>%
+  mutate(
+    log_mu = 2.0 +                                                        
+         0.30 * Green_level_scaled +                                  
+         0.40 * ifelse(Trap_type == "Light_CO2", 1, 0) +             
+         0.20 * Temperature_scaled +                                  
+         0.15 * Humidity_scaled +                                 
+         -0.10 * Wind_scaled +                                    
+         0.05 * Blue_area_scaled +                                    
+         0.15 * Green_level_scaled * ifelse(Trap_type == "Light_CO2", 1, 0) +  
+         0.10 * log(Host_abundance) +                     
+        -0.50 * log(Predator_abundance) +                     
+        0.15 * log(Host_abundance) * log(Predator_abundance)  + 
+
+
+         # random effects
+         city_intercept +                                             
+         city_green_slope * Green_level_scaled +                      
+         species_intercept +                                          
+         site_intercept,
+    
+    mu = exp(log_mu),
+    Mosquito_abundance = rnbinom(n(), mu = mu, size = 2)
+  )
+
+# Clean up
+df <- df %>%
+  dplyr::select(-log_mu, -mu, -city_intercept, -city_green_slope, 
+                -species_intercept, -site_intercept,
+                -Green_level_scaled, -Temperature_scaled, -Humidity_scaled, 
+                -Wind_scaled, -Blue_area_scaled)
+
+# Calculate biodiversity index
+
+df <- df %>%
+  group_by(City, Site, Sampling_date) %>%
+  mutate(
+    p_i = Mosquito_abundance / sum(Mosquito_abundance, na.rm = TRUE),
+    Biodiversity_index = -sum(p_i * log(p_i + 1e-8), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-p_i)
+
+
+write.csv(df, "./data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv", 
+          row.names = FALSE)
+
+```
+
+
+
