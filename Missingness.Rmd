@@ -13,6 +13,8 @@ This notebook includes three different scenarios of missingness each with a diff
 \end{itemize}
 
 # Set-up
+We first load the required R libraries for data manipulation, visualization, and
+handling missing data.
 ```{r}
 # Get needed libraries
 library(dplyr)
@@ -23,6 +25,9 @@ library(naniar)
 library(mice)
 library(gridExtra)
 ```
+
+#1) Load and Prepare Data
+
 ```{r}
 
 df <- read.csv("./Simulated Data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv")
@@ -44,7 +49,10 @@ df <- df %>%
 truth <- df
 ```
 
-# 1) MCAR: Weather data logger battery dies at random times
+# 2) MCAR: Weather data logger battery dies at random times
+
+We randomly select a proportion of site-dates  where the weather logger fails,
+causing missing data completely at random (MCAR).
 
 ```{r}
 # Mechanism: for a random 8% of site-dates, the logger battery dies and we lose Weather columns:
@@ -131,7 +139,7 @@ df_final <- df_final %>%
   )
 ```
 
-```{r, fig.width=10 fig.height= 8}
+```{r}
 # Missingness heatmap for main variables
 
 p1 <- df_final %>%
@@ -221,6 +229,9 @@ print(p2)
 print(p3)
 
 ```
+The missingness is purely random, simulating data loss due to hardware failure. There should be no systematic pattern related to other variables. Missingness is imposed in mosquito abundance and biodiversity based on observed
+rainfall and wind speed. This simulates traps failing more often in heavy rain or
+high winds.
 
 ```{r}
 # Tests
@@ -312,3 +323,36 @@ print(sensitivity_results)
 ```
 
 
+The p-value is extremely small, essentially zero. This strongly rejects the null hypothesis that the weather variables are missing completely at random (MCAR). Therefore, we can conclude that missingness in the weather variables is not purely random and may be related to other observed or unobserved factors.
+
+
+Regression summary:
+| Variable | Estimate | Std. Error | z value | Pr(>|z|) | OR (95% CI) |
+|----------------|-----------|------------|---------|-----------|-------------|
+| Intercept | -3.173 | 0.189 | -16.753 | <2e-16 | 0.042 (0.029–0.060) |
+| Rainfall_mm | 0.131 | 0.007 | 17.547 | <2e-16 | 1.14 (1.12–1.16) |
+| Wind_speed_10m | 0.0165 | 0.035 | 0.478 | 0.633 | 1.02 (0.95–1.09) |
+
+Rainfall_mm has a significant positive effect (p < 0.001). For each 1 mm increase in rainfall, the odds of trap failure increase by ~14%.
+
+Wind_speed_10m is not statistically significant (p = 0.633), suggesting wind had little impact on trap failure in this dataset.
+
+The logistic regression confirms the MAR mechanism: missingness in Mosquito_abundance is related to the observable variable Rainfall_mm, consistent with how we simulated MAR.
+
+
+
+
+True mean (no missingness) = 21.1984
+
+Mean observed values increase slightly with proportion of missingness (mean_obs vs mean_mi), indicating that missing data could bias the mean if not addressed.
+
+As missingness increases (bins -2 to 3), the observed mean slightly underestimates the true mean.
+
+Multiple imputation or other strategies would be necessary to reduce bias when analyzing the final dataset.
+
+
+
+Tests:
+MCAR test: Weather variables are not missing completely at random.
+MAR logistic regression: Rainfall drives missingness, confirming MAR simulation; wind is not a significant predictor.
+Impact on means: Missing data can bias the observed mean, highlighting the importance of imputation.
