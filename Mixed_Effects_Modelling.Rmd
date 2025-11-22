@@ -28,7 +28,7 @@ library(sjPlot)
 ## 1. Data Import and Preparation
 
 ```{r}
-df <- read.csv("./data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv")
+df <- read.csv("./Simulated Data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv")
 df$Trap_type = factor(df$Trap_type)
 df$Mosquito_species = factor(df$Mosquito_species)
 
@@ -90,7 +90,7 @@ m2_city_green$sdr$pdHess
 cat("AIC difference:", AIC(m2_city_green) - baseline_aic, "\n")
 
 lrt_m2 <- anova(m1_baseline, m2_city_green)$Chisq[2]
-
+lrt_m2
 p_m2 <- 0.5 * pchisq(lrt_m2, df = 2, lower.tail = FALSE) + 
            0.5 * pchisq(lrt_m2, df = 1, lower.tail = FALSE)
 cat("p-value:", p_m2, "\n")
@@ -122,7 +122,7 @@ m3_city_temp$sdr$pdHess
 cat("AIC difference:", AIC(m3_city_temp) - baseline_aic, "\n")
 
 lrt_m3 <- anova(m1_baseline, m3_city_temp)$Chisq[2]
-
+lrt_m3
 p_m3 <- 0.5 * pchisq(lrt_m3, df = 2, lower.tail = FALSE) +
         0.5 * pchisq(lrt_m3, df = 1, lower.tail = FALSE)
 cat("p-value for Temp slope:", p_m3, "\n")
@@ -148,6 +148,7 @@ m4_both_slopes <- glmmTMB(
 check_convergence(m4_both_slopes)
 m4_both_slopes$sdr$pdHess
 
+summary(m4_both_slopes)
 # Compare m2 -> m4 (does adding temperature slope to m2 improve fit?)
 lrt_m2_m4 <- anova(m2_city_green, m4_both_slopes)$Chisq[2]
 cat("LRT stat (m2 -> m4):", lrt_m2_m4, "\n")
@@ -194,11 +195,31 @@ m_full <- glmmTMB(
 summary(m_full)
 ```
 
-We start by removing the least significant interaction term which is Host_abundance:Predator_abundance . 
+We start by removing the least significant interaction term which is Temperature:Relative_humidity . 
+```{r}
+m_wo_temp_hum <- glmmTMB(
+  Mosquito_abundance ~ Green_area_coverage * Trap_type +
+                       Temperature + Relative_humidity +
+                       Host_abundance * Predator_abundance +
+                       Blue_area_coverage +
+                       factor(Month) +
+                       (1 + Green_area_coverage | City) +          # City random intercept + slope
+                      (1 | Location.Site:City) +        
+                      (1 | Mosquito_species),
+  family = nbinom2(),
+  data = df,
+  REML = FALSE  # ML for fixed effects comparison
+)
+
+summary(m_wo_temp_hum)
+anova(m_full, m_wo_temp_hum)
+```
+Removing the Temperature:Relative_humidity interaction does not significantly worsen model fit, then the interaction is not needed. We move on to the next interaction.
+
 ```{r}
 m_wo_host_pre <- glmmTMB(
   Mosquito_abundance ~ Green_area_coverage * Trap_type +
-                       Temperature * Relative_humidity +
+                       Temperature + Relative_humidity +
                        Host_abundance + Predator_abundance +
                        Blue_area_coverage +
                        factor(Month) +
@@ -211,35 +232,36 @@ m_wo_host_pre <- glmmTMB(
 )
 
 summary(m_wo_host_pre)
-anova(m_full, m_wo_host_pre)
+anova(m_wo_temp_hum, m_wo_host_pre)
 ```
-Removing the Host_abundance:Predator_abundance interaction does not significantly worsen model fit, then the interaction is not needed. We move on to the next interaction.
+
+Removing the Host_abundance:Predator_abundance  interaction does not worsen model fit, the interaction should be removed. The remaining interaction is significant, therefore we move to the main effects. The least significant one is Predator_abundance. 
 
 ```{r}
-m_wo_temp_hum <- glmmTMB(
+m_wo_pre <- glmmTMB(
   Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature + Relative_humidity +
-                       Host_abundance + Predator_abundance +
-                       Blue_area_coverage +
-                       factor(Month) +
+                       Host_abundance + 
+                       Blue_area_coverage + 
+                       factor(Month) +  
                        (1 + Green_area_coverage | City) +          # City random intercept + slope
                       (1 | Location.Site:City) +        
                       (1 | Mosquito_species),
   family = nbinom2(),
   data = df,
-  REML = FALSE  # ML for fixed effects comparison
+  REML = FALSE
 )
 
-summary(m_wo_temp_hum)
-anova(m_wo_host_pre, m_wo_temp_hum)
+summary(m_wo_pre)
+anova(m_wo_host_pre, m_wo_pre)
 ```
-Removing the Temp x Humidity interaction does not worsen model fit, the interaction should be removed. The remaining interaction is significant, therefore we move to the main effects.
+Removal of predator abundance did not worsen the model, we remove it and move on the next main effect.
 
 ```{r}
 m_wo_blue <- glmmTMB(
   Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature + Relative_humidity +
-                       Host_abundance + Predator_abundance +
+                       Host_abundance + 
                        factor(Month) +  
                        (1 + Green_area_coverage | City) +          # City random intercept + slope
                       (1 | Location.Site:City) +        
@@ -250,16 +272,16 @@ m_wo_blue <- glmmTMB(
 )
 
 summary(m_wo_blue)
-anova(m_wo_temp_hum, m_wo_blue)
+anova(m_wo_pre, m_wo_blue)
 ```
-Removal of blue zone coverage worsened the model, we retain it. Month shows mixed significance, so we will try removing it and compare the model fits.
+
+Removal of blue zone coverage did not worsen the model, we remove it and move on the next main effect. Month shows mixed significance, so we will try removing it and compare the model fits.
 
 ```{r}
 m_wo_month <- glmmTMB(
   Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature + Relative_humidity +
-                       Host_abundance + Predator_abundance +
-                       Blue_area_coverage +
+                       Host_abundance + 
                        (1 + Green_area_coverage | City) +          # City random intercept + slope
                       (1 | Location.Site:City) +        
                       (1 | Mosquito_species),
@@ -268,17 +290,15 @@ m_wo_month <- glmmTMB(
   REML = FALSE
 )
 
-anova(m_wo_temp_hum, m_wo_month)
+anova(m_wo_blue, m_wo_month)
 ```
-Removing the month worsens the fit, so our final model is:
+Removing the month did not worsen the fit, so our final model is:
 
 ```{r}
 m_final <- glmmTMB(
   Mosquito_abundance ~ Green_area_coverage * Trap_type +
                        Temperature + Relative_humidity +
-                       Host_abundance + Predator_abundance +
-                       factor(Month) +  
-                       Blue_area_coverage +
+                       Host_abundance + 
                        (1 + Green_area_coverage | City) +          # City random intercept + slope
                       (1 | Location.Site:City) +        
                       (1 | Mosquito_species), 
@@ -298,8 +318,29 @@ summary(m_final)
 # Simulate residuals
 sim_res <- simulateResiduals(m_final)
 
-# Plot residual diagnostics
+# Save QQ plot
+png("./Simulated Data/dharma_qq_plot.png", width = 1200, height = 1200, res = 300)
+plotQQunif(sim_res)
+dev.off()
+
+# Save Residuals vs Predicted
+png("./Simulated Data/dharma_residuals_vs_predicted.png", width = 1200, height = 1200, res = 300)
+plotResiduals(sim_res)
+dev.off()
+
+# Save Dispersion test separately
+png("./Simulated Data/dharma_dispersion_test.png", width = 1200, height = 1200, res = 300)
+testDispersion(sim_res, plot = TRUE)
+dev.off()
+
+# Save Zero-inflation test separately
+png("./Simulated Data/dharma_zeroinflation_test.png", width = 1200, height = 1200, res = 300)
+testZeroInflation(sim_res, plot = TRUE)
+dev.off()
+
 plot(sim_res)
+testDispersion(sim_res)
+testZeroInflation(sim_res)
 
 ```
 ```{r}
@@ -331,43 +372,37 @@ plot(pred_host) +
   labs(x="Host abundance", y="Predicted mosquitoes") +
   theme_minimal()
 
-pred_pre <- ggpredict(m_final, terms = "Predator_abundance")
-plot(pred_pre) +
-  labs(x="Predator abundance", y="Predicted mosquitoes") +
-  theme_minimal()
-
-pred_month <- ggpredict(m_final, terms = "Month [1:12]")
-
-plot(pred_month) +
-  scale_x_continuous(breaks = 1:12,
-                     labels = month.abb) +
-  labs(x="Month", y="Predicted mosquitoes",
-       title="Seasonal effect") +
-  theme_minimal()
-
 
 ```
 
 
 ```{r}
-re_plots = sjPlot::plot_model(m_final, type = "re") 
+re_plots = sjPlot::plot_model(m_final, type = "re",
+                              show.values = TRUE, 
+                              value.offset = 0.3, 
+                              value.size = 2.5, 
+                              dot.size = 2,                
+                              line.size = 0.7,
+                              vline.color = 'black') 
 
 re_plots[[1]] + theme_minimal()
 re_plots[[3]] + theme_minimal()
 ```
 
 ```{r}
-plot_model(m_final, type = "est", 
-           axis.lim = c(0.8, 1.4),        
-           show.values = TRUE,             
-           value.offset = 0.3,            
-           value.size = 2.5,               
-           dot.size = 2,                
-           line.size = 0.7,
-           vline.color = 'black') +              
+p <- plot_model(m_final, type = "est", transform = "exp", 
+                axis.lim = c(0.8, 1.4),        
+                show.values = TRUE,             
+                value.offset = 0.3,            
+                value.size = 2.5,               
+                dot.size = 2,                
+                line.size = 0.7,
+                vline.color = 'black') +              
   labs(title = "Incidence Rate Ratios (IRR)",
        x = "Incidence Rate Ratio") +
-  theme_minimal()     
+  theme_minimal()
+
+p + scale_color_manual(values = c("steelblue"))   
 
 ```
 ```{r}
@@ -377,429 +412,7 @@ icc_values
 ```
 
 
-## 5. Visualizations
 
-```{r}
-
-ggplot(df, aes(x = factor(Green_level), y = Mosquito_abundance, fill = Trap_type)) +
-  geom_boxplot(alpha = 0.7, outlier.size = 0.5) +
-  theme_minimal(base_size = 14) +
-  labs(
-    title = "Observed Mosquito Count by Greenness Level and Trap Type",
-    x = "Urban Greenness Level",
-    y = "Observed Mosquito Abundance"
-  ) +
-  scale_fill_brewer(palette = "Set2")
-
-```
-Mosquito abundance increases consistently with greenness level across both trap types.
-Although Light–CO₂ traps and Human–Odor–CO₂ traps show similar distributions, greener areas clearly host higher mosquito numbers.
-This provides initial, descriptive evidence of an ecological gradient before modeling.
-
-
-
-```{r}
-num_df <- df %>% select(Temperature_2m, Relative_humidity, Blue_area_coverage, Green_area_coverage = Green_level)
-corrplot(cor(num_df), method = "color", type = "upper", tl.col = "black")
-
-```
-
-
-
-
-```{r}
-
-df$Green_level <- as.factor(df$Green_level)
-
-# Refit model
-model_abundance2 <- glmmTMB(
-  Mosquito_abundance ~ Green_level * Trap_type + Temperature_2m +
-    Relative_humidity + Blue_area_coverage +
-    (1 | Location.Site) + (1 | Mosquito_species),
-  family = nbinom2(),
-  data = df
-)
-
-# Estimated marginal means
-emm <- emmeans(model_abundance2, ~ Green_level * Trap_type, type = "response")
-
-# Plot interaction
-plot(emm, comparison = TRUE) +
-  labs(
-    title = "Predicted Mosquito Abundance by Green Level and Trap Type",
-    x = "Urban Greenness Level",
-    y = "Predicted Abundance (Response Scale)"
-  )
-
-
-
-```
-The model predicts a strong increase in mosquito abundance with higher urban greenness, indicating vegetation-rich environments favor mosquito populations.
-The effect of trap type is minimal — both traps capture similar numbers of mosquitoes across all vegetation levels.
-Confidence intervals widen at higher greenness levels, suggesting greater variability in mosquito counts in green zones.
-
-
-
-
-
-
-```{r}
-
-
-# Extract random effects and standard deviations
-ran_list <- ranef(model_abundance)$cond
-
-# Convert to a tidy data frame
-ran_df <- bind_rows(
-  lapply(names(ran_list), function(g) {
-    data.frame(
-      Group = g,
-      Level = rownames(ran_list[[g]]),
-      Estimate = ran_list[[g]][, "(Intercept)"]
-    )
-  })
-)
-
-# Plot
-ggplot(ran_df, aes(x = reorder(Level, Estimate), y = Estimate, color = Group)) +
-  geom_point(size = 2) +
-  coord_flip() +
-  facet_wrap(~ Group, scales = "free_y") +
-  theme_minimal(base_size = 13) +
-  labs(
-    title = "Random Effects by Site and Species",
-    x = "Level (Site / Species)",
-    y = "Deviation from Average Abundance"
-  ) +
-  theme(legend.position = "none",
-        axis.text.y = element_text(angle = 15, vjust = 0.5),)
-
-
-```
-
-
-
-### Weather data visualitaon 
-
-```{r}
-ggplot(df, aes(x = Temperature_2m)) +
-  geom_histogram(binwidth = 1, fill = "steelblue", color = "white", alpha = 0.8) +
-  labs(
-    title = "Temperature Distribution Across Sampling Sites",
-    x = "Temperature (°C)",
-    y = "Frequency"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold", size = 16),
-    axis.text.x = element_text(angle = 45, hjust = 1)
-  )
-
-```
-```{r}
-ggplot(df, aes(x = City, y = Relative_humidity, fill = City)) +
-  geom_boxplot(alpha = 0.7) +
-  labs(
-    title = "Variation in Relative Humidity by City",
-    x = "City",
-    y = "Relative Humidity (%)"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold", size = 16),
-    legend.position = "none",
-    axis.text.x = element_text(angle = 45, hjust = 1)
-  )
-
-```
-
-```{r}
-df %>%
-  ggplot(aes(x = Wind_speed_10m, fill = City)) +
-  geom_density(alpha = 0.5) +
-  labs(
-    title = "Distribution of Wind Speed Across Cities",
-    x = "Wind Speed (m/s)",
-    y = "Density",
-    fill = "City"
-  ) +
-  theme_minimal(base_size = 14)
-
-
-```
-
-
-```{r}
-
-df %>%
-  mutate(Month = month(Sampling_date, label = TRUE, abbr = TRUE)) %>%
-  group_by(City, Month) %>%
-  summarise(Mean_Temperature = mean(Temperature_2m, na.rm = TRUE)) %>%
-  ggplot(aes(x = Month, y = Mean_Temperature, color = City, group = City)) +
-  geom_line(size = 1.2) +
-  geom_point(size = 2) +
-  labs(
-    title = "Average Monthly Temperature by City",
-    x = "Month",
-    y = "Temperature (°C)",
-    color = "City"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    plot.title = element_text(face = "bold", size = 16)
-  )
-
-```
-
-
-
-```{r}
-
-pred_inter <- ggpredict(
-  model_abundance,
-  terms = c("Green_level", "Trap_type"),
-  type = "fixed",              # correct for your version
-  bias_correction = TRUE
-)
-
-pred_df <- as.data.frame(pred_inter)
-
-
-ggplot(pred_df, aes(
-  x = factor(x),       # Greenness levels
-  y = group,           # Trap types
-  fill = predicted
-)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(predicted, 1)), color = "black", size = 4) +
-  scale_fill_gradient(low = "#fefefe", high = "#01665e") +
-  labs(
-    title = "Predicted Mosquito Count by Greenness Level and Trap Type",
-    x = "Urban Greenness Level",
-    y = "Trap Type",
-    fill = "Predicted\nAbundance"
-  ) +
-  theme_minimal(base_size = 14)+
-  theme(plot.title = element_text(size=12))
-
-
-```
-Mosquito abundance rises markedly with increasing urban greenness, regardless of the trap type used.
-The model predicts roughly five times more mosquitoes in highly vegetated areas than in low-greenness zones, highlighting the ecological importance of vegetation in mosquito distribution.
-
-
-
-
-
-```{r}
-df_pred <- df %>%
-  mutate(
-    Predicted = predict(model_abundance, type = "response"),
-    Observed = Mosquito_abundance
-  )
-
-
-ggplot(df_pred, aes(x = Predicted, y = Observed)) +
-  geom_point(alpha = 0.4, size = 2) +
-  geom_smooth(method = "lm", color = "#01665e", se = TRUE) +
-  labs(
-    title = "Model Fit: Predicted vs Observed Mosquito Abundance",
-    x = "Predicted Abundance (Model)",
-    y = "Observed Abundance (Data)"
-  ) +
-  theme_minimal(base_size = 14)
-
-```
-
-
-
-
-```{r}
-df %>%
-  group_by(Green_level, Mosquito_species) %>%
-  summarise(Mean_abundance = mean(Mosquito_abundance)) %>%
-  ggplot(aes(x = factor(Green_level), y = Mean_abundance, fill = Mosquito_species)) +
-  geom_bar(stat = "identity", position = "fill") +
-  labs(
-    title = "Relative Mosquito Species Composition by Greenness Level",
-    x = "Urban Greenness Level",
-    y = "Proportion of Total Abundance"
-  ) +
-  theme_minimal(base_size = 14)
-
-```
-
-
-```{r}
-
-df %>%
-  mutate(Month = month(Sampling_date, label = TRUE, abbr = TRUE)) %>%
-  group_by(Month) %>%
-  summarise(Mean_abundance = mean(Mosquito_abundance)) %>%
-  ggplot(aes(x = Month, y = Mean_abundance, group = 1)) +
-  geom_line(size = 1.2, color = "#01665e") +
-  geom_point(size = 2, color = "#01665e") +
-  labs(
-    title = "Seasonal Trend in Mosquito Abundance",
-    x = "Month",
-    y = "Average Abundance"
-  ) +
-  theme_minimal(base_size = 14)
-
-
-```
-
-
-
-
-```{r}
-df %>%
-  mutate(Month = month(Sampling_date, label = TRUE, abbr = TRUE)) %>%
-  group_by(City, Month) %>%
-  summarise(Mean_abundance = mean(Mosquito_abundance, na.rm = TRUE)) %>%
-  ggplot(aes(x = Month, y = Mean_abundance, group = 1)) +
-  geom_line(color = "#01665e", size = 1.2) +
-  geom_point(color = "#01665e", size = 2) +
-  facet_wrap(~ City, ncol = 2) +
-  labs(
-    title = "Seasonal Trends in Mosquito Abundance by City",
-    x = "Month",
-    y = "Average Mosquito Abundance"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold", size = 16),
-    strip.text = element_text(size = 12),
-    axis.text.x = element_text(angle = 90, vjust = 0.5)
-  )
-
-```
-
-
-
-
-```{r}
-df %>%
-  mutate(Month = month(Sampling_date, label = TRUE, abbr = TRUE)) %>%
-  group_by(City, Month) %>%
-  summarise(Mean_abundance = mean(Mosquito_abundance, na.rm = TRUE)) %>%
-  ggplot(aes(x = Month, y = Mean_abundance, color = City, group = City)) +
-  geom_line(size = 1.2) +
-  geom_point(size = 2) +
-  labs(
-    title = "Seasonal Trends in Mosquito Abundance by City",
-    x = "Month",
-    y = "Average Mosquito Abundance",
-    color = "City"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold", size = 16),
-    legend.position = "bottom"
-  )
-
-
-```
-
-
-```{r}
-df %>%
-  mutate(Month = month(Sampling_date, label = TRUE, abbr = TRUE)) %>%
-  group_by(Mosquito_species, Month) %>%
-  summarise(Mean_abundance = mean(Mosquito_abundance, na.rm = TRUE), .groups = "drop") %>%
-  ggplot(aes(x = Month, y = Mean_abundance, color = Mosquito_species, group = Mosquito_species)) +
-  geom_point(size = 2) +
-  geom_smooth(se = FALSE, linewidth = 1.2, method = "loess") +
-  labs(
-    title = "Seasonal Trends in Mosquito Abundance by Species",
-    x = "Month",
-    y = "Average Mosquito Abundance",
-    color = "Species"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold", size = 16),
-    legend.position = "bottom"
-  )
-
-```
-
-
-
-```{r}
-
-df$Date <- as.Date(df$Sampling_date, format = "%Y-%m-%d")
-
-# Create the monthly trend plot
-df %>%
-  mutate(Month = month(Date, label = TRUE, abbr = TRUE)) %>%
-  group_by(Mosquito_species, Month) %>%
-  summarise(Mean_abundance = mean(Mosquito_abundance, na.rm = TRUE), .groups = "drop") %>%
-  ggplot(aes(x = Month, y = Mean_abundance, color = Mosquito_species, group = Mosquito_species)) +
-  geom_line(linewidth = 1.2) +
-  geom_point(size = 2) +
-  labs(
-    title = "Monthly Trends in Mosquito Abundance by Species",
-    x = "Month",
-    y = "Average Mosquito Abundance",
-    color = "Species"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold", size = 16),
-    legend.position = "bottom"
-  )
-
-```
-
-
-
-```{r}
-
-# Create faceted plot by species
-df %>%
-  mutate(Month = month(Date, label = TRUE, abbr = TRUE)) %>%
-  group_by(Mosquito_species, Month) %>%
-  summarise(Mean_abundance = mean(Mosquito_abundance, na.rm = TRUE), .groups = "drop") %>%
-  ggplot(aes(x = Month, y = Mean_abundance, group = 1)) +
-  geom_line(color = "#2C7BB6", linewidth = 1.2) +
-  geom_point(color = "#2C7BB6", size = 2) +
-  facet_wrap(~ Mosquito_species, scales = "free_y") +
-  labs(
-    title = "Monthly Trends in Mosquito Abundance by Species",
-    x = "Month",
-    y = "Average Mosquito Abundance"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
-    strip.text = element_text(face = "bold"),
-    axis.text.x = element_text(angle = 90, vjust = 0.5),
-    legend.position = "none"
-  )
-
-```
-
-
-
-
-```{r}
-ggplot(df, aes(x = Trap_type, y = Mosquito_abundance, fill = Trap_type)) +
-  geom_boxplot(outlier.alpha = 0.2) +
-  facet_wrap(~ City) +
-  scale_fill_brewer(palette = "Set2") +
-  labs(
-    title = "Distribution of Mosquito Abundance by Trap Type and City",
-    x = "Trap Type", y = "Mosquito Abundance"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    legend.position = "none",
-    axis.text.x = element_text(angle = 45, hjust = 1)
-  )
-
-```
 
 
 

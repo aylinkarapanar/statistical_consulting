@@ -19,13 +19,15 @@ library(dplyr)
 library(tidyr)
 library(lubridate)
 library(ggplot2)
-library(maniar)
+library(naniar)
 library(mice)
 library(gridExtra)
 ```
 ```{r}
 
-df <- 
+df <- read.csv("./Simulated Data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv")
+df$Trap_type = factor(df$Trap_type)
+df$Mosquito_species = factor(df$Mosquito_species)
 df <- df %>%
   mutate(
     SiteDateID = paste(City, Site, Sampling_date, sep = "_")
@@ -134,7 +136,7 @@ df_final <- df_final %>%
 
 p1 <- df_final %>%
   slice_sample(n = 500) %>%
-  select(Temperature, Relative_humidity, Wind_speed_10m, Rainfall_mm,
+  dplyr::select(Temperature, Relative_humidity, Wind_speed_10m, Rainfall_mm,
          Mosquito_abundance, Biodiversity_index) %>%
   naniar::vis_miss(sort_miss = TRUE) +
   ggtitle("Missingness Map (Subset of 500 Rows)") +
@@ -185,14 +187,20 @@ mnar_df <- df_final %>%
   mutate(true_ab = Mosquito_abundance_orig,
          missing_ab = is.na(Mosquito_abundance))
 
+# Create fewer, more meaningful bins
 mnar_plot_df <- mnar_df %>%
   filter(!is.na(true_ab)) %>%
   mutate(ab_bin = cut(true_ab, 
-                      breaks = seq(0, max(true_ab, na.rm = TRUE) + 5, by = 5))) %>%
+                      breaks = c(0, 5, 10, 20, 50, 100, 200, Inf),  # Wider bins
+                      labels = c("0-5", "6-10", "11-20", "21-50", 
+                                "51-100", "101-200", ">200"),
+                      include.lowest = TRUE)) %>%
   group_by(ab_bin) %>%
   summarize(mean_ab = mean(true_ab, na.rm = TRUE), 
             miss_rate = mean(missing_ab),
-            .groups = "drop")
+            n_obs = n(),  # Count observations per bin
+            .groups = "drop") %>%
+  filter(n_obs >= 10)  # Only keep bins with at least 10 observations
 
 p3 <- ggplot(mnar_plot_df, aes(x = ab_bin, y = miss_rate)) +
   geom_point(size = 3) +
@@ -221,7 +229,7 @@ print(p3)
 
 cat("\n--- Little's MCAR test (on weather vars) ---\n")
 little_input <- df_final %>%
-  select(Temperature, Relative_humidity, Wind_speed_10m, Rainfall_mm, 
+  dplyr::select(Temperature, Relative_humidity, Wind_speed_10m, Rainfall_mm, 
          Green_area_coverage, Blue_area_coverage)
 
 res_little <- tryCatch({
@@ -257,7 +265,7 @@ for (d in deltas) {
   # multiple imputation with mice (predictive mean matching) for a simple corrected mean
   # Use a small number of imputations for speed
   mi_input <- df_sens %>%
-    select(Mosquito_abundance_MNAR, Green_level, Rainfall_mm, Temperature, Trap_type) %>%
+    dplyr::select(Mosquito_abundance_MNAR, Green_level, Rainfall_mm, Temperature, Trap_type) %>%
     rename(Mosq = Mosquito_abundance_MNAR)
   # mice needs factor variables encoded
   mi_input$Trap_type <- as.factor(mi_input$Trap_type)

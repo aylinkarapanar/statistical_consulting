@@ -11,12 +11,10 @@ output: html_notebook
 library(dplyr)
 library(tidyr)
 library(lubridate)
-library(writexl)
 library(purrr)
 library(MASS) 
-library(naniar)
 library(ggplot2)
-library(naniar)
+
 
 set.seed(1234)
 ```
@@ -293,7 +291,7 @@ df <- df %>%
   dplyr::select(-p_i)
 
 
-write.csv(df, "./data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv", 
+write.csv(df, "./Simulated Data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv", 
           row.names = FALSE)
 
 ```
