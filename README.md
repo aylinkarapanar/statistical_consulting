@@ -64,6 +64,6 @@ install.packages(c(
 To knit:  
 Open any `.Rmd` file an click **Knit**.
 
-# Authers 
+# Authors 
 
 Atakan1507 & aylinkarapanar
