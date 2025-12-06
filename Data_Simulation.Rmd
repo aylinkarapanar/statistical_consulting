@@ -388,4 +388,39 @@ cat("  Mean Host:", mean_host, "\n")
 cat("  Mean Predator:", mean_predator, "\n")
 ```
 
+# Expected ICC 
+```{r}
+sigma2_city <- 0.16
+sigma2_slope <- 0.04  
+sigma2_site <- 0.06
+sigma2_species <- 0.09
+
+# Assume theta = 1 for moderate dispersion
+sigma2_obs <- log(1 + 1/1) 
+
+# Total variance 
+sigma2_total <- sigma2_city + sigma2_site + sigma2_species + sigma2_obs
+
+# Calculate ICCs
+ICC_city <- sigma2_city / sigma2_total
+ICC_site_marginal <- (sigma2_city + sigma2_site) / sigma2_total
+ICC_site_conditional <- sigma2_site / sigma2_total
+ICC_species <- sigma2_species / sigma2_total
+
+# Print results
+cat("Observation-level variance:", round(sigma2_obs, 3), "\n")
+cat("Total variance:", round(sigma2_total, 3), "\n")
+
+cat("Intraclass Correlations:\n")
+cat("ICC (Site|City):", round(ICC_site_marginal, 3), " = ", round(ICC_site_marginal*100, 1), "%\n", sep="")
+cat("ICC (Species):", round(ICC_species, 3), " = ", round(ICC_species*100, 1), "%\n", sep="")
+
+# Variance partition
+cat("\nVariance Partition:\n")
+cat("City:        ", round((sigma2_city/sigma2_total)*100, 1), "%\n", sep="")
+cat("Site:        ", round((sigma2_site/sigma2_total)*100, 1), "%\n", sep="")
+cat("Species:     ", round((sigma2_species/sigma2_total)*100, 1), "%\n", sep="")
+cat("Observation: ", round((sigma2_obs/sigma2_total)*100, 1), "%\n", sep="")
+```
+
 
