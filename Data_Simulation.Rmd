@@ -297,4 +297,95 @@ write.csv(df, "./Simulated Data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv"
 ```
 
 
+# Expected Beta Coefficients
+
+When the raw values are used to fit the models, these will be the expected results to be recovered by the model. 
+```{r}
+# Load your simulated data
+df <- read.csv("./Simulated Data/Mock_Mosquito_MixedEffects_w_slopes_Dataset.csv")
+
+# Simulated coefficients (on standardized scale)
+beta_green_std <- 0.30
+beta_trap_std <- 0.40
+beta_temp_std <- 0.20
+beta_humidity_std <- 0.15
+beta_wind_std <- -0.10
+beta_blue_std <- 0.05
+beta_interaction_std <- 0.15
+
+```
+```{r}
+# Calculate SDs for each predictor
+sd_green <- sd(df$Green_area_coverage)
+sd_temp <- sd(df$Temperature)
+sd_humidity <- sd(df$Relative_humidity)
+sd_wind <- sd(df$Wind_speed_10m)
+sd_blue <- sd(df$Blue_area_coverage)
+
+
+# Convert to raw scale
+beta_green_raw <- beta_green_std / sd_green
+beta_trap_raw <- beta_trap_std  
+beta_temp_raw <- beta_temp_std / sd_temp
+beta_humidity_raw <- beta_humidity_std / sd_humidity
+beta_wind_raw <- beta_wind_std / sd_wind
+beta_blue_raw <- beta_blue_std / sd_blue
+beta_interaction_raw <- beta_interaction_std / sd_green  
+
+# Display expected raw coefficients
+cat("Expected raw coefficients:\n")
+cat("Green coverage:", round(beta_green_raw, 4), "\n")
+cat("Trap type:", round(beta_trap_raw, 4), "\n")
+cat("Temperature:", round(beta_temp_raw, 4), "\n")
+cat("Humidity:", round(beta_humidity_raw, 4), "\n")
+cat("Wind speed:", round(beta_wind_raw, 4), "\n")
+cat("Blue area:", round(beta_blue_raw, 4), "\n")
+cat("Green × Trap:", round(beta_interaction_raw, 4), "\n")
+```
+We need to make linear approximation to find the expected Beta coefficients when raw values are used. Starting with the log-linear relationship:
+\begin{equation}
+\log(\mu) = \beta \log(X)
+\end{equation}
+
+Taking the derivative with respect to $X$:
+\begin{equation}
+\frac{d[\log(\mu)]}{dX} = \beta \cdot \frac{d[\log(X)]}{dX} = \beta \cdot \frac{1}{X} = \frac{\beta}{X}
+\end{equation}
+
+For the raw-linear model:
+\begin{equation}
+\frac{d[\log(\mu)]}{dX} = \gamma
+\end{equation}
+
+To approximate $\gamma$ using the log-linear relationship, evaluate at the mean of $X$:
+\begin{equation}
+\gamma \approx \frac{\beta}{\bar{X}}
+\end{equation}
+
+where $\bar{X} = \text{mean}(X)$.
+```{r}
+# Calculate means
+mean_host <- mean(df$Host_abundance)
+mean_predator <- mean(df$Predator_abundance)
+
+# Standardized coefficients (on log scale)
+beta_host_log_std <- 0.10
+beta_predator_log_std <- -0.50
+
+sd_log_host <- sd(log(df$Host_abundance))
+sd_log_predator <- sd(log(df$Predator_abundance))
+
+beta_host_log_raw <- beta_host_log_std / sd_log_host
+beta_predator_log_raw <- beta_predator_log_std / sd_log_predator
+
+beta_host_raw_approx <- beta_host_log_raw / mean_host
+beta_predator_raw_approx <- beta_predator_log_raw / mean_predator
+
+cat("  Host (raw):", beta_host_raw_approx, "\n")
+cat("  Predator (raw):", beta_predator_raw_approx, "\n\n")
+
+cat("  Mean Host:", mean_host, "\n")
+cat("  Mean Predator:", mean_predator, "\n")
+```
+
 
