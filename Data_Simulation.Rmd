@@ -137,28 +137,7 @@ design <- design %>%
       Season == "Spring" ~ 1.0,
       Season == "Summer" ~ 1.3,
       Season == "Fall"   ~ 0.9
-    ),
-    
-    # Host abundance (correlated with season + city)
-    Host_abundance = round(
-      host_base * season_multiplier +
-      rnorm(n(), 0, 10), 
-      0
-    ),
-    
-
-  # Predator abundance
-  Predator_abundance = round(
-        predator_base * (0.8 + 0.4 * sin(2*pi*(Month)/12)) + 
-        rnorm(n(), 0, 8),
-        0
-  ),
-  
-    Predator_abundance = pmax(Predator_abundance, 1), 
-    Host_abundance = pmax(Host_abundance, 1)
-
-  ) %>%
-  dplyr::select(-host_base, -predator_base)
+    ))
 
 
 # Expand to species level
@@ -246,7 +225,7 @@ df <- df %>%
     Blue_area_scaled = as.numeric(scale(Blue_area_coverage))
   )
 
-# Generate abundance with random slopes!
+# Generate abundance with random slopes
 df <- df %>%
   mutate(
     log_mu = 2.0 +                                                        

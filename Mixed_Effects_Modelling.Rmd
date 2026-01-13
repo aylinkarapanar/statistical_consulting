@@ -319,22 +319,22 @@ summary(m_final)
 sim_res <- simulateResiduals(m_final)
 
 # Save QQ plot
-png("./Simulated Data/dharma_qq_plot.png", width = 1200, height = 1200, res = 300)
+png("./Simulated Data/dharma_qq_plot.png", width = 3000, height = 2000, res = 500)
 plotQQunif(sim_res)
 dev.off()
 
 # Save Residuals vs Predicted
-png("./Simulated Data/dharma_residuals_vs_predicted.png", width = 1200, height = 1200, res = 300)
+png("./Simulated Data/dharma_residuals_vs_predicted.png", width = 3000, height = 2000, res = 500)
 plotResiduals(sim_res)
 dev.off()
 
 # Save Dispersion test separately
-png("./Simulated Data/dharma_dispersion_test.png", width = 1200, height = 1200, res = 300)
+png("./Simulated Data/dharma_dispersion_test.png", width = 3000, height = 2000, res = 500)
 testDispersion(sim_res, plot = TRUE)
 dev.off()
 
 # Save Zero-inflation test separately
-png("./Simulated Data/dharma_zeroinflation_test.png", width = 1200, height = 1200, res = 300)
+png("./Simulated Data/dharma_zeroinflation_test.png", width = 3000, height = 2000, res = 500)
 testZeroInflation(sim_res, plot = TRUE)
 dev.off()
 
@@ -383,7 +383,8 @@ re_plots = sjPlot::plot_model(m_final, type = "re",
                               value.size = 2.5, 
                               dot.size = 2,                
                               line.size = 0.7,
-                              vline.color = 'black') 
+                              vline.color = 'black')
+
 
 re_plots[[1]] + theme_minimal()
 re_plots[[3]] + theme_minimal()
