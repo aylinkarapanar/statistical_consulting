@@ -350,7 +350,7 @@ write.csv(final_sites_summary,
 
 ```
 
-```{r}
+```{r, fig.width=16, fig.height=16}
 other_zones <- ua_full %>%
   filter(!code_2018 %in% c(green_codes, blue_codes)) %>%
   st_intersection(urban_core)
@@ -452,8 +452,10 @@ p <- ggplot() +
   theme_minimal(base_size = 11) +
   theme(
     legend.position = "right",
-    plot.title = element_text(face = "bold", size = 14, margin = margin(b = 5)),
-    axis.text = element_text(size = 8, color = "grey40"),
+    plot.title = element_text(face = "bold", size = 30, margin = margin(b = 5)),
+    axis.text = element_text(size = 20, color = "grey40"),
+    legend.text = element_text(size = 20),
+    legend.title = element_text(size = 25, face = "bold"),
     panel.grid.minor = element_blank()
   )
 
@@ -463,7 +465,7 @@ p
 ```{r}
 # Save plot
 ggsave(file.path("./Simulated Data/nijmegen_sampling_map.png"),
-       plot = p, width = 14, height = 10, dpi = 300)
+       plot = p, width = 18, height = 14, dpi = 300)
 ```
 
 ```{r}
