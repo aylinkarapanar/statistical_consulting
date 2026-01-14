@@ -377,21 +377,50 @@ plot(pred_host) +
 
 
 ```{r}
-re_plots = sjPlot::plot_model(m_final, type = "re",
+replot_city <- sjPlot::plot_model(
+  m_final, type = "re",
+  show.values  = TRUE,
+  value.offset = 0.3,
+  value.size   = 2.5,
+  dot.size     = 2,
+  line.size    = 0.7,
+  vline.color  = "black"
+)[[1]] +
+  theme_minimal() 
+
+replot_city$facet$params$labeller <- labeller(.default = function(x) gsub("_", " ", x))
+
+replot_species <- sjPlot::plot_model(m_final, type = "re",
                               show.values = TRUE, 
                               value.offset = 0.3, 
                               value.size = 2.5, 
                               dot.size = 2,                
                               line.size = 0.7,
-                              vline.color = 'black')
+                              vline.color = 'black')[[3]] + theme_minimal()
+replot_city
+replot_species
 
+ggsave(
+  filename = "random_effects_city.png",
+  plot     = replot_city,
+  path = "./Simulated Data/",
+  width    = 6,
+  height   = 4,
+  dpi      = 300
+)
 
-re_plots[[1]] + theme_minimal()
-re_plots[[3]] + theme_minimal()
+ggsave(
+  filename = "random_effects_species.png",
+  plot     = replot_species,
+  path = "./Simulated Data/",
+  width    = 6,
+  height   = 4,
+  dpi      = 300
+)
 ```
 
 ```{r}
-p <- plot_model(m_final, type = "est", transform = "exp", 
+p <- sjPlot::plot_model(m_final, type = "est", transform = "exp", 
                 axis.lim = c(0.8, 1.4),        
                 show.values = TRUE,             
                 value.offset = 0.3,            
@@ -399,11 +428,19 @@ p <- plot_model(m_final, type = "est", transform = "exp",
                 dot.size = 2,                
                 line.size = 0.7,
                 vline.color = 'black') +              
-  labs(title = "Incidence Rate Ratios (IRR)",
-       x = "Incidence Rate Ratio") +
-  theme_minimal()
+  labs(title = "Incidence Rate Ratios (IRR)") +
+  theme_minimal() + scale_color_manual(values = c("steelblue")) 
 
-p + scale_color_manual(values = c("steelblue"))   
+p   
+
+ggsave(
+  filename = "irr_plot.png",
+  plot     = p,
+  path = "./Simulated Data/",
+  width    = 6,
+  height   = 4,
+  dpi      = 300
+)
 
 ```
 ```{r}
